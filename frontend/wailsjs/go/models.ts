@@ -51,6 +51,63 @@ export namespace host {
 
 }
 
+export namespace main {
+	
+	export class LogHostInfo {
+	    id: string;
+	    name: string;
+	    frames: number;
+	    startT: number;
+	    endT: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LogHostInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.frames = source["frames"];
+	        this.startT = source["startT"];
+	        this.endT = source["endT"];
+	    }
+	}
+	export class LogMeta {
+	    path: string;
+	    hosts: LogHostInfo[];
+	
+	    static createFrom(source: any = {}) {
+	        return new LogMeta(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.hosts = this.convertValues(source["hosts"], LogHostInfo);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace monitor {
 	
 	export class Capabilities {
@@ -76,6 +133,86 @@ export namespace monitor {
 	        this.sudo = source["sudo"];
 	        this.stageDir = source["stageDir"];
 	    }
+	}
+	export class Proc {
+	    pid: number;
+	    ppid: number;
+	    name: string;
+	    user: string;
+	    service: string;
+	    state: string;
+	    cpu: number;
+	    memPct: number;
+	    rssKiB: number;
+	    diskR: number;
+	    diskW: number;
+	    net: number;
+	    threads: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Proc(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.pid = source["pid"];
+	        this.ppid = source["ppid"];
+	        this.name = source["name"];
+	        this.user = source["user"];
+	        this.service = source["service"];
+	        this.state = source["state"];
+	        this.cpu = source["cpu"];
+	        this.memPct = source["memPct"];
+	        this.rssKiB = source["rssKiB"];
+	        this.diskR = source["diskR"];
+	        this.diskW = source["diskW"];
+	        this.net = source["net"];
+	        this.threads = source["threads"];
+	    }
+	}
+	export class Frame {
+	    hostId: string;
+	    t: number;
+	    ncpu: number;
+	    memTotal: number;
+	    memUsed: number;
+	    cpu: number;
+	    mem: number;
+	    procs: Proc[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Frame(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hostId = source["hostId"];
+	        this.t = source["t"];
+	        this.ncpu = source["ncpu"];
+	        this.memTotal = source["memTotal"];
+	        this.memUsed = source["memUsed"];
+	        this.cpu = source["cpu"];
+	        this.mem = source["mem"];
+	        this.procs = this.convertValues(source["procs"], Proc);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }

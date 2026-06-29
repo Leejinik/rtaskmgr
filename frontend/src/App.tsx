@@ -2,15 +2,27 @@ import { useEffect, useRef, useState } from "react";
 import { EventsOn } from "../wailsjs/runtime";
 import {
   ListHosts, Connect, Disconnect, DeleteHost,
-  SaveLog, IsLogNamed, KeepLogAndQuit, DiscardAndQuit,
+  SaveLogDialog, IsLogNamed,
+  NethogsInstall, NethogsRollback,
+  OpenLogDialog, LogFrames,
 } from "../wailsjs/go/main/App";
-import { host } from "../wailsjs/go/models";
+import { host, main } from "../wailsjs/go/models";
 import { Frame, HostStatus, Capabilities, SortKey } from "./types";
 import ProcTable from "./components/ProcTable";
 import DetailModal from "./components/DetailModal";
 import ConnectDialog from "./components/ConnectDialog";
-import NamePrompt from "./components/NamePrompt";
 import ContextMenu from "./components/ContextMenu";
+import PlaybackBar from "./components/PlaybackBar";
+
+interface Playback {
+  meta: main.LogMeta;
+  hostId: string;
+  frames: Frame[];
+  index: number;
+  playing: boolean;
+}
+
+const basename = (p: string) => p.split(/[\\/]/).pop() || p;
 import "./taskmgr.css";
 
 export default function App() {
@@ -19,16 +31,18 @@ export default function App() {
   const [frames, setFrames] = useState<Record<string, Frame>>({});
   const [status, setStatus] = useState<Record<string, HostStatus>>({});
   const [caps, setCaps] = useState<Record<string, Capabilities>>({});
+  const [nethogs, setNethogs] = useState<Record<string, { active: boolean; installedByUs: boolean }>>({});
+  const [nhBusy, setNhBusy] = useState<Record<string, boolean>>({});
 
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("cpu");
   const [sortDir, setSortDir] = useState<1 | -1>(-1);
   const [selectedPid, setSelectedPid] = useState<number | null>(null);
   const [detailPid, setDetailPid] = useState<number | null>(null);
+  const [playback, setPlayback] = useState<Playback | null>(null);
 
   const [dialog, setDialog] = useState<{ open: boolean; editing?: host.Host }>({ open: false });
   const [ctx, setCtx] = useState<{ x: number; y: number; h: host.Host } | null>(null);
-  const [namePrompt, setNamePrompt] = useState<null | "save" | "exit">(null);
   const [logName, setLogName] = useState("");
   const [recNamed, setRecNamed] = useState(false);
   const [toast, setToast] = useState("");
@@ -56,8 +70,14 @@ export default function App() {
     const offStatus = EventsOn("status", (s: any) => {
       setStatus((prev) => ({ ...prev, [s.hostId]: { state: s.state, detail: s.detail } }));
     });
-    const offConfirm = EventsOn("confirm-save", () => setNamePrompt("exit"));
-    return () => { offFrame(); offStatus(); offConfirm(); };
+    const offNet = EventsOn("nethogs", (s: any) => {
+      setNethogs((prev) => ({
+        ...prev,
+        [s.hostId]: { active: s.active, installedByUs: s.installedByUs },
+      }));
+      if (s.msg) showToast(s.msg);
+    });
+    return () => { offFrame(); offStatus(); offNet(); };
   }, []);
 
   // ---- Ctrl+S ----
@@ -65,13 +85,57 @@ export default function App() {
     const onKey = async (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        if (await IsLogNamed()) showToast(`기록 중 — ${logName || "저장된 로그"}`);
-        else setNamePrompt("save");
+        if (await IsLogNamed()) {
+          showToast(`기록 중 — ${logName || "저장된 로그"}`);
+          return;
+        }
+        try {
+          const path = await SaveLogDialog(); // native Save As (defaults to Desktop)
+          if (path) {
+            setRecNamed(true);
+            setLogName(basename(path));
+            showToast(`기록 저장 — ${path}`);
+          }
+        } catch (err: any) {
+          showToast(`저장 실패: ${err}`);
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [logName]);
+
+  // ---- log playback ----
+  async function openLog() {
+    try {
+      const meta = await OpenLogDialog();
+      if (!meta || !meta.hosts || meta.hosts.length === 0) return;
+      const hostId = meta.hosts[0].id;
+      const frames = (await LogFrames(hostId)) ?? [];
+      setDetailPid(null);
+      setPlayback({ meta, hostId, frames, index: 0, playing: false });
+    } catch (e: any) {
+      showToast(`로그 열기 실패: ${e}`);
+    }
+  }
+
+  async function selectLogHost(hostId: string) {
+    const frames = (await LogFrames(hostId)) ?? [];
+    setPlayback((p) => (p ? { ...p, hostId, frames, index: 0, playing: false } : p));
+  }
+
+  // advance frames while playing
+  useEffect(() => {
+    if (!playback?.playing) return;
+    const t = window.setInterval(() => {
+      setPlayback((p) => {
+        if (!p) return p;
+        if (p.index >= p.frames.length - 1) return { ...p, playing: false };
+        return { ...p, index: p.index + 1 };
+      });
+    }, 1000);
+    return () => window.clearInterval(t);
+  }, [playback?.playing]);
 
   async function handleConnect(id: string) {
     setSelectedId(id);
@@ -90,6 +154,29 @@ export default function App() {
   function handleDisconnect(id: string) {
     Disconnect(id);
     setFrames((prev) => { const n = { ...prev }; delete n[id]; return n; });
+    setNethogs((prev) => { const n = { ...prev }; delete n[id]; return n; });
+  }
+
+  async function handleNethogsInstall(id: string) {
+    setNhBusy((prev) => ({ ...prev, [id]: true }));
+    try {
+      await NethogsInstall(id);
+    } catch (e: any) {
+      showToast(`네트워크 수집 실패: ${e}`);
+    } finally {
+      setNhBusy((prev) => ({ ...prev, [id]: false }));
+    }
+  }
+
+  async function handleNethogsRollback(id: string) {
+    setNhBusy((prev) => ({ ...prev, [id]: true }));
+    try {
+      await NethogsRollback(id);
+    } catch (e: any) {
+      showToast(`롤백 실패: ${e}`);
+    } finally {
+      setNhBusy((prev) => ({ ...prev, [id]: false }));
+    }
   }
 
   async function handleSaved(h: host.Host, connect: boolean) {
@@ -114,18 +201,6 @@ export default function App() {
     }
   }
 
-  async function doSaveLog(name: string) {
-    try {
-      await SaveLog(name);
-      setLogName(name);
-      setRecNamed(true);
-      setNamePrompt(null);
-      showToast(`로그 저장 시작 — ${name}`);
-    } catch (e: any) {
-      showToast(`저장 실패: ${e}`);
-    }
-  }
-
   const selected = hosts.find((h) => h.id === selectedId) ?? null;
   const frame = selectedId ? frames[selectedId] : undefined;
   const st = selectedId ? status[selectedId] : undefined;
@@ -133,6 +208,68 @@ export default function App() {
   const connected = st?.state === "streaming" && !!frame;
   const detailProc =
     frame && detailPid != null ? frame.procs.find((p) => p.pid === detailPid) : undefined;
+
+  // ---- playback screen (log reader) ----
+  if (playback) {
+    const pf = playback.frames[playback.index];
+    const pbDetail =
+      pf && detailPid != null ? pf.procs.find((p) => p.pid === detailPid) : undefined;
+    return (
+      <div className="app">
+        <PlaybackBar
+          meta={playback.meta}
+          hostId={playback.hostId}
+          index={playback.index}
+          total={playback.frames.length}
+          playing={playback.playing}
+          currentT={pf?.t ?? 0}
+          onHost={selectLogHost}
+          onIndex={(i) => setPlayback((p) => (p ? { ...p, index: i, playing: false } : p))}
+          onPlayToggle={() => setPlayback((p) => (p ? { ...p, playing: !p.playing } : p))}
+          onStep={(d) =>
+            setPlayback((p) =>
+              p
+                ? { ...p, playing: false, index: Math.min(p.frames.length - 1, Math.max(0, p.index + d)) }
+                : p
+            )
+          }
+          onClose={() => { setDetailPid(null); setPlayback(null); }}
+        />
+        <div className="topbar" style={{ borderTop: "1px solid var(--border)" }}>
+          <input
+            className="search"
+            placeholder="이름, 서비스 또는 PID로 검색"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        {pf ? (
+          <ProcTable
+            frame={pf}
+            search={search}
+            sortKey={sortKey}
+            sortDir={sortDir}
+            selectedPid={selectedPid}
+            onSort={onSort}
+            onSelect={setSelectedPid}
+            onOpen={(pid) => setDetailPid(pid)}
+          />
+        ) : (
+          <div className="empty">이 호스트의 프레임이 없습니다</div>
+        )}
+        {detailPid != null && (
+          <DetailModal
+            hostId={playback.hostId}
+            pid={detailPid}
+            current={pbDetail}
+            frames={playback.frames}
+            onClose={() => setDetailPid(null)}
+          />
+        )}
+        {toast && <div className="toast">{toast}</div>}
+      </div>
+    );
+  }
 
   return (
     <div className="shell">
@@ -173,6 +310,11 @@ export default function App() {
             })
           )}
         </div>
+        <div className="sidebar-footer">
+          <button className="toolbtn" style={{ width: "100%" }} onClick={openLog}>
+            📂 로그 열기 (재생)
+          </button>
+        </div>
       </aside>
 
       {/* ---- main ---- */}
@@ -199,6 +341,35 @@ export default function App() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
+              {connected && (
+                nethogs[selected.id]?.active ? (
+                  <button
+                    className="toolbtn"
+                    disabled={nhBusy[selected.id]}
+                    onClick={() => handleNethogsRollback(selected.id)}
+                    title="네트워크 수집을 중지하고, 이 앱이 설치한 경우 nethogs를 제거(롤백)합니다"
+                  >
+                    {nhBusy[selected.id]
+                      ? "처리 중…"
+                      : nethogs[selected.id]?.installedByUs
+                      ? "● 네트워크 롤백(제거)"
+                      : "● 네트워크 수집 중지"}
+                  </button>
+                ) : (
+                  <button
+                    className="toolbtn"
+                    disabled={nhBusy[selected.id]}
+                    onClick={() => handleNethogsInstall(selected.id)}
+                    title="nethogs로 프로세스별 네트워크 사용량 수집을 시작합니다 (없으면 오프라인 RPM 설치)"
+                  >
+                    {nhBusy[selected.id]
+                      ? "설치 중…"
+                      : caps[selected.id]?.nethogs
+                      ? "네트워크 수집 시작"
+                      : "네트워크 수집 (nethogs 설치)"}
+                  </button>
+                )
+              )}
             </>
           ) : (
             <span className="main-title sub">호스트를 선택하세요</span>
@@ -276,29 +447,6 @@ export default function App() {
           pid={detailPid}
           current={detailProc}
           onClose={() => setDetailPid(null)}
-        />
-      )}
-
-      {namePrompt === "save" && (
-        <NamePrompt
-          title="로그 저장"
-          message="이 시점부터 1초 단위 기록을 지정한 이름으로 계속 저장합니다."
-          defaultName={logName}
-          onConfirm={doSaveLog}
-          onCancel={() => setNamePrompt(null)}
-        />
-      )}
-
-      {namePrompt === "exit" && (
-        <NamePrompt
-          title="종료 — 기록을 저장할까요?"
-          message="저장하지 않으면 지금까지 기록된 임시 로그는 삭제됩니다."
-          defaultName={logName || "session"}
-          confirmLabel="저장하고 종료"
-          showDiscard
-          onConfirm={(name) => KeepLogAndQuit(name)}
-          onDiscard={() => DiscardAndQuit()}
-          onCancel={() => setNamePrompt(null)}
         />
       )}
 

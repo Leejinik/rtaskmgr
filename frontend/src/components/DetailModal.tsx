@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { record } from "../../wailsjs/go/models";
 import { ProcessHistory } from "../../wailsjs/go/main/App";
-import { Proc } from "../types";
+import { Proc, Frame } from "../types";
 import { pct, mib, bytesRate } from "../format";
 import Sparkline from "./Sparkline";
 
@@ -9,15 +9,32 @@ interface Props {
   hostId: string;
   pid: number;
   current?: Proc; // latest row for the header line
+  frames?: Frame[]; // when set, build the timeline from this log (playback) instead of live
   onClose: () => void;
 }
 
-// DetailModal shows a process's 1-second CPU/Memory/Disk timeline, refreshed
-// from the in-memory ring each second.
-export default function DetailModal({ hostId, pid, current, onClose }: Props) {
+// DetailModal shows a process's 1-second CPU/Memory/Disk timeline. Live mode
+// refreshes from the in-memory ring each second; playback mode builds it once
+// from the opened log's frames.
+export default function DetailModal({ hostId, pid, current, frames, onClose }: Props) {
   const [hist, setHist] = useState<record.Point[]>([]);
 
   useEffect(() => {
+    if (frames) {
+      const pts = frames
+        .map((f) => {
+          const p = f.procs.find((x) => x.pid === pid);
+          return p
+            ? record.Point.createFrom({
+                t: f.t, cpu: p.cpu, memPct: p.memPct,
+                rssKiB: p.rssKiB, diskR: p.diskR, diskW: p.diskW,
+              })
+            : null;
+        })
+        .filter((x): x is record.Point => x !== null);
+      setHist(pts);
+      return;
+    }
     let live = true;
     const pull = async () => {
       try {
@@ -33,7 +50,7 @@ export default function DetailModal({ hostId, pid, current, onClose }: Props) {
       live = false;
       clearInterval(t);
     };
-  }, [hostId, pid]);
+  }, [hostId, pid, frames]);
 
   const cpu = hist.map((p) => p.cpu);
   const mem = hist.map((p) => p.memPct);

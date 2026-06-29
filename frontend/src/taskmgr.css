@@ -112,6 +112,51 @@ body,
   font-size: 12px;
   text-align: center;
 }
+.sidebar-footer {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+}
+
+/* ---- playback bar ---- */
+.pbbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border);
+}
+.pbtag {
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.pbfile {
+  color: var(--text-dim);
+  font-size: 12px;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pbsel {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+.pbslider {
+  flex: 1;
+  accent-color: var(--accent);
+}
+.pbtime {
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  min-width: 130px;
+  text-align: right;
+}
 .main {
   display: flex;
   flex-direction: column;

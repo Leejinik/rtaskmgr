@@ -55,6 +55,9 @@ export default function ProcTable({
   const maxMem = Math.max(1, ...rows.map((p) => p.memPct));
   const maxDisk = Math.max(1, ...rows.map((p) => Math.max(0, diskBps(p.diskR, p.diskW))));
   const totalDisk = rows.reduce((s, p) => s + Math.max(0, diskBps(p.diskR, p.diskW)), 0);
+  const netRows = rows.filter((p) => p.net >= 0);
+  const maxNet = Math.max(1, ...netRows.map((p) => p.net));
+  const totalNet = netRows.reduce((s, p) => s + p.net, 0);
 
   const arrow = (k: SortKey) =>
     sortKey === k ? <span className="arrow">{sortDir === 1 ? "▲" : "▼"}</span> : null;
@@ -99,7 +102,7 @@ export default function ProcTable({
               <span className="lbl">디스크{arrow("disk")}</span>
             </th>
             <th onClick={() => onSort("net")}>
-              <span className="agg">—</span>
+              <span className="agg">{netRows.length ? netRate(totalNet) : "—"}</span>
               <span className="lbl">네트워크{arrow("net")}</span>
             </th>
           </tr>
@@ -135,7 +138,12 @@ export default function ProcTable({
                 <td className="heatcell" style={{ ["--a" as any]: heat(Math.max(0, disk), maxDisk) }}>
                   {bytesRate(disk)}
                 </td>
-                <td>{netRate(p.net)}</td>
+                <td
+                  className={p.net >= 0 ? "heatcell" : ""}
+                  style={p.net >= 0 ? ({ ["--a" as any]: heat(p.net, maxNet) }) : undefined}
+                >
+                  {netRate(p.net)}
+                </td>
               </tr>
             );
           })}

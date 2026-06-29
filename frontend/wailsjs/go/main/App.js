@@ -10,10 +10,6 @@ export function DeleteHost(arg1) {
   return window['go']['main']['App']['DeleteHost'](arg1);
 }
 
-export function DiscardAndQuit() {
-  return window['go']['main']['App']['DiscardAndQuit']();
-}
-
 export function Disconnect(arg1) {
   return window['go']['main']['App']['Disconnect'](arg1);
 }
@@ -22,12 +18,24 @@ export function IsLogNamed() {
   return window['go']['main']['App']['IsLogNamed']();
 }
 
-export function KeepLogAndQuit(arg1) {
-  return window['go']['main']['App']['KeepLogAndQuit'](arg1);
-}
-
 export function ListHosts() {
   return window['go']['main']['App']['ListHosts']();
+}
+
+export function LogFrames(arg1) {
+  return window['go']['main']['App']['LogFrames'](arg1);
+}
+
+export function NethogsInstall(arg1) {
+  return window['go']['main']['App']['NethogsInstall'](arg1);
+}
+
+export function NethogsRollback(arg1) {
+  return window['go']['main']['App']['NethogsRollback'](arg1);
+}
+
+export function OpenLogDialog() {
+  return window['go']['main']['App']['OpenLogDialog']();
 }
 
 export function ProcessHistory(arg1, arg2) {
@@ -38,6 +46,6 @@ export function SaveHost(arg1) {
   return window['go']['main']['App']['SaveHost'](arg1);
 }
 
-export function SaveLog(arg1) {
-  return window['go']['main']['App']['SaveLog'](arg1);
+export function SaveLogDialog() {
+  return window['go']['main']['App']['SaveLogDialog']();
 }

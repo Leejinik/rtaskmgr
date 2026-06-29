@@ -11,9 +11,15 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// rpmFS carries the offline nethogs RPM bundle (rpms/rhel8, rpms/rhel9) into the
+// binary so the network column can be installed on air-gapped RHEL hosts.
+//
+//go:embed all:rpms
+var rpmFS embed.FS
+
 func main() {
 	// Create an instance of the app structure
-	app := NewApp()
+	app := NewApp(rpmFS)
 
 	// Create application with options
 	err := wails.Run(&options.App{

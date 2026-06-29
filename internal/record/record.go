@@ -115,13 +115,12 @@ func (r *Recorder) Record(f monitor.Frame) {
 	rg.push(f)
 }
 
-// SaveAs renames the temp capture to <name>.ndjson and keeps appending to it.
-// This is the Ctrl+S path. No-op-with-rename if already armed (save under a new
-// name and continue there).
-func (r *Recorder) SaveAs(name string) (string, error) {
+// SaveAs moves the temp capture to dest (an absolute path the user chose, e.g.
+// on their Desktop) and keeps appending to it. This is the Ctrl+S path. If
+// already armed, it saves under the new path and continues there.
+func (r *Recorder) SaveAs(dest string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	dest := filepath.Join(r.dir, sanitize(name)+".ndjson")
 
 	if r.f != nil {
 		r.f.Close()
