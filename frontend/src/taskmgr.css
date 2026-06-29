@@ -97,6 +97,26 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+}
+.host-more {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: var(--text-mute);
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+}
+.host-item:hover .host-more {
+  opacity: 1;
+}
+.host-more:hover {
+  background: #444;
+  color: var(--text);
 }
 .host-line2 {
   margin-left: 16px;
@@ -347,6 +367,11 @@ th .arrow {
   color: var(--accent);
   font-size: 10px;
   margin-left: 4px;
+}
+th .arrow .ord {
+  color: var(--text-mute);
+  font-size: 9px;
+  margin-left: 1px;
 }
 
 table.proc tbody td {

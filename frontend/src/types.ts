@@ -59,3 +59,14 @@ export type SortKey =
   | "memPct"
   | "disk"
   | "net";
+
+// One level of a multi-column sort. dir: 1 = ascending, -1 = descending.
+export interface SortSpec {
+  key: SortKey;
+  dir: 1 | -1;
+}
+
+// Up to this many explicit sort levels (CPU-desc is always the implicit final
+// tiebreaker on top of these). Sorting ~300 rows is negligible regardless; the
+// cap is for human readability, not performance.
+export const MAX_SORT = 3;

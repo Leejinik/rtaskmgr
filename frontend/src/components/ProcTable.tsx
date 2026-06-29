@@ -1,14 +1,13 @@
 import { useMemo } from "react";
-import { Frame, Proc, SortKey } from "../types";
+import { Frame, Proc, SortKey, SortSpec } from "../types";
 import { pct, mib, bytesRate, netRate, diskBps, heat } from "../format";
 
 interface Props {
   frame: Frame;
   search: string;
-  sortKey: SortKey;
-  sortDir: 1 | -1;
+  sort: SortSpec[];
   selectedPid: number | null;
-  onSort: (k: SortKey) => void;
+  onSort: (k: SortKey, additive: boolean) => void;
   onSelect: (pid: number) => void;
   onOpen: (pid: number) => void;
 }
@@ -27,7 +26,7 @@ function sortValue(p: Proc, k: SortKey): number | string {
 }
 
 export default function ProcTable({
-  frame, search, sortKey, sortDir, selectedPid, onSort, onSelect, onOpen,
+  frame, search, sort, selectedPid, onSort, onSelect, onOpen,
 }: Props) {
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -41,15 +40,22 @@ export default function ProcTable({
           String(p.pid).includes(q)
       );
     }
+    const specs = sort.length ? sort : [{ key: "cpu" as SortKey, dir: -1 as const }];
+    const cpuExplicit = specs.some((s) => s.key === "cpu");
     const sorted = [...r].sort((a, b) => {
-      const av = sortValue(a, sortKey);
-      const bv = sortValue(b, sortKey);
-      if (av < bv) return -1 * sortDir;
-      if (av > bv) return 1 * sortDir;
+      for (const s of specs) {
+        const av = sortValue(a, s.key);
+        const bv = sortValue(b, s.key);
+        if (av < bv) return -1 * s.dir;
+        if (av > bv) return 1 * s.dir;
+      }
+      // CPU descending is the implicit final tiebreaker (the always-on default),
+      // then PID for stability.
+      if (!cpuExplicit && a.cpu !== b.cpu) return b.cpu - a.cpu;
       return a.pid - b.pid;
     });
     return sorted;
-  }, [frame, search, sortKey, sortDir]);
+  }, [frame, search, sort]);
 
   const maxCpu = Math.max(1, ...rows.map((p) => p.cpu));
   const maxMem = Math.max(1, ...rows.map((p) => p.memPct));
@@ -59,8 +65,16 @@ export default function ProcTable({
   const maxNet = Math.max(1, ...netRows.map((p) => p.net));
   const totalNet = netRows.reduce((s, p) => s + p.net, 0);
 
-  const arrow = (k: SortKey) =>
-    sortKey === k ? <span className="arrow">{sortDir === 1 ? "▲" : "▼"}</span> : null;
+  const arrow = (k: SortKey) => {
+    const i = sort.findIndex((s) => s.key === k);
+    if (i < 0) return null;
+    return (
+      <span className="arrow">
+        {sort[i].dir === 1 ? "▲" : "▼"}
+        {sort.length > 1 ? <sub className="ord">{i + 1}</sub> : null}
+      </span>
+    );
+  };
 
   return (
     <div className="tablewrap">
@@ -76,32 +90,32 @@ export default function ProcTable({
           <col style={{ width: "9.25%" }} />
         </colgroup>
         <thead>
-          <tr>
-            <th className="left" onClick={() => onSort("name")}>
+          <tr title="클릭: 정렬 · Shift+클릭: 다중 정렬 추가/토글 (최대 3단계)">
+            <th className="left" onClick={(e) => onSort("name", e.shiftKey)}>
               <span className="lbl">이름</span>{arrow("name")}
             </th>
-            <th onClick={() => onSort("pid")}>
+            <th onClick={(e) => onSort("pid", e.shiftKey)}>
               <span className="lbl">PID</span>{arrow("pid")}
             </th>
-            <th onClick={() => onSort("user")}>
+            <th onClick={(e) => onSort("user", e.shiftKey)}>
               <span className="lbl">사용자</span>{arrow("user")}
             </th>
-            <th className="left" onClick={() => onSort("service")}>
+            <th className="left" onClick={(e) => onSort("service", e.shiftKey)}>
               <span className="lbl">서비스</span>{arrow("service")}
             </th>
-            <th onClick={() => onSort("cpu")}>
+            <th onClick={(e) => onSort("cpu", e.shiftKey)}>
               <span className="agg">{frame.cpu.toFixed(0)}%</span>
               <span className="lbl">CPU{arrow("cpu")}</span>
             </th>
-            <th onClick={() => onSort("memPct")}>
+            <th onClick={(e) => onSort("memPct", e.shiftKey)}>
               <span className="agg">{frame.mem.toFixed(0)}%</span>
               <span className="lbl">메모리{arrow("memPct")}</span>
             </th>
-            <th onClick={() => onSort("disk")}>
+            <th onClick={(e) => onSort("disk", e.shiftKey)}>
               <span className="agg">{bytesRate(totalDisk)}</span>
               <span className="lbl">디스크{arrow("disk")}</span>
             </th>
-            <th onClick={() => onSort("net")}>
+            <th onClick={(e) => onSort("net", e.shiftKey)}>
               <span className="agg">{netRows.length ? netRate(totalNet) : "—"}</span>
               <span className="lbl">네트워크{arrow("net")}</span>
             </th>

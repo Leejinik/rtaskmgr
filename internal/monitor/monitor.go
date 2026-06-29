@@ -12,7 +12,9 @@ package monitor
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -27,6 +29,16 @@ import (
 	"rtaskmgr/internal/agent"
 	"rtaskmgr/internal/host"
 )
+
+// samplerName is content-addressed (RemoteName + short hash of the binary), so
+// every app instance / user stages the SAME file. That lets concurrent sessions
+// share one binary instead of overwriting a fixed path — overwriting a running
+// executable fails with ETXTBSY ("Text file busy") and would block the second
+// connection. Uploads are skipped when the file is already present (see Start).
+var samplerName = func() string {
+	sum := sha256.Sum256(agent.SamplerBinary)
+	return agent.RemoteName + "-" + hex.EncodeToString(sum[:4])
+}()
 
 // Proc mirrors one row emitted by cmd/sampler. DiskR/DiskW are -1 when the
 // sampler could not read /proc/<pid>/io (no permission); Net is -1 when nethogs
@@ -203,12 +215,17 @@ func (m *Manager) Start(parent context.Context, h host.Host) (Capabilities, erro
 		return caps, err
 	}
 
-	bin := caps.StageDir + "/" + agent.RemoteName
-	m.status(h.ID, "uploading", "sampler → "+caps.StageDir)
-	if err := uploadBytes(client, agent.SamplerBinary, bin, true); err != nil {
-		client.Close()
-		m.status(h.ID, "error", "upload: "+err.Error())
-		return caps, err
+	bin := caps.StageDir + "/" + samplerName
+	// Skip the upload if an identical sampler is already staged (e.g. by another
+	// session/user). Crucially this avoids overwriting a running binary, which
+	// would fail with ETXTBSY and block concurrent connections.
+	if !samplerPresent(client, bin, len(agent.SamplerBinary)) {
+		m.status(h.ID, "uploading", "sampler → "+caps.StageDir)
+		if err := uploadSampler(client, bin); err != nil {
+			client.Close()
+			m.status(h.ID, "error", "upload: "+err.Error())
+			return caps, err
+		}
 	}
 
 	ctx, cancel := context.WithCancel(parent)
@@ -679,6 +696,38 @@ func rhelMajor(os string) string {
 		return ver
 	}
 	return ""
+}
+
+// samplerPresent reports whether an executable of the exact expected size is
+// already staged at path (content is implied by the content-addressed name).
+func samplerPresent(client *ssh.Client, path string, size int) bool {
+	sess, err := client.NewSession()
+	if err != nil {
+		return false
+	}
+	defer sess.Close()
+	cmd := fmt.Sprintf(`[ -x %s ] && [ "$(stat -c%%s %s 2>/dev/null)" = "%d" ] && echo OK`, path, path, size)
+	out, _ := sess.CombinedOutput(cmd)
+	return strings.Contains(string(out), "OK")
+}
+
+// uploadSampler writes the sampler to a per-session temp file and atomically
+// renames it into place. Renaming over a path that another session is currently
+// executing is safe on Linux (the running process keeps the old inode), so this
+// never hits ETXTBSY — unlike truncating the target directly.
+func uploadSampler(client *ssh.Client, finalPath string) error {
+	sess, err := client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+	sess.Stdin = strings.NewReader(base64.StdEncoding.EncodeToString(agent.SamplerBinary))
+	// $$ is the remote shell's PID — unique per session.
+	cmd := fmt.Sprintf(`t=%q.$$.tmp; base64 -d > "$t" && chmod 0700 "$t" && mv -f "$t" %q`, finalPath, finalPath)
+	if out, err := sess.CombinedOutput(cmd); err != nil {
+		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // uploadBytes writes data to an absolute remote path via a base64 stream

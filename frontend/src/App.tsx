@@ -7,7 +7,7 @@ import {
   OpenLogDialog, LogFrames,
 } from "../wailsjs/go/main/App";
 import { host, main } from "../wailsjs/go/models";
-import { Frame, HostStatus, Capabilities, SortKey } from "./types";
+import { Frame, HostStatus, Capabilities, SortKey, SortSpec, MAX_SORT } from "./types";
 import ProcTable from "./components/ProcTable";
 import DetailModal from "./components/DetailModal";
 import ConnectDialog from "./components/ConnectDialog";
@@ -35,8 +35,7 @@ export default function App() {
   const [nhBusy, setNhBusy] = useState<Record<string, boolean>>({});
 
   const [search, setSearch] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("cpu");
-  const [sortDir, setSortDir] = useState<1 | -1>(-1);
+  const [sort, setSort] = useState<SortSpec[]>([{ key: "cpu", dir: -1 }]);
   const [selectedPid, setSelectedPid] = useState<number | null>(null);
   const [detailPid, setDetailPid] = useState<number | null>(null);
   const [playback, setPlayback] = useState<Playback | null>(null);
@@ -187,18 +186,35 @@ export default function App() {
   }
 
   async function handleDelete(id: string) {
+    const h = hosts.find((x) => x.id === id);
+    if (!window.confirm(`호스트 '${h?.name ?? id}' 을(를) 목록에서 삭제할까요?`)) return;
     handleDisconnect(id);
-    await DeleteHost(id).catch(() => {});
+    await DeleteHost(id).catch((e) => showToast(`삭제 실패: ${e}`));
     const list = await refreshHosts();
     if (selectedId === id) setSelectedId(list[0]?.id ?? null);
   }
 
-  function onSort(k: SortKey) {
-    if (k === sortKey) setSortDir((d) => (d === 1 ? -1 : 1));
-    else {
-      setSortKey(k);
-      setSortDir(k === "name" || k === "service" || k === "user" ? 1 : -1);
-    }
+  // onSort: plain click = single sort (toggle dir if already primary). Shift+click
+  // = add/toggle this column as an additional level (up to MAX_SORT). CPU-desc
+  // remains the implicit final tiebreaker even when the list is cleared.
+  function onSort(k: SortKey, additive: boolean) {
+    const defDir: 1 | -1 = k === "name" || k === "service" || k === "user" ? 1 : -1;
+    setSort((prev) => {
+      const i = prev.findIndex((s) => s.key === k);
+      if (additive) {
+        if (i >= 0) {
+          const n = [...prev];
+          n[i] = { key: k, dir: (n[i].dir === 1 ? -1 : 1) as 1 | -1 };
+          return n;
+        }
+        if (prev.length >= MAX_SORT) return prev; // cap — ignore extra levels
+        return [...prev, { key: k, dir: defDir }];
+      }
+      if (prev.length === 1 && prev[0].key === k) {
+        return [{ key: k, dir: (prev[0].dir === 1 ? -1 : 1) as 1 | -1 }];
+      }
+      return [{ key: k, dir: defDir }];
+    });
   }
 
   const selected = hosts.find((h) => h.id === selectedId) ?? null;
@@ -247,8 +263,7 @@ export default function App() {
           <ProcTable
             frame={pf}
             search={search}
-            sortKey={sortKey}
-            sortDir={sortDir}
+            sort={sort}
             selectedPid={selectedPid}
             onSort={onSort}
             onSelect={setSelectedPid}
@@ -303,6 +318,17 @@ export default function App() {
                   <div className="host-line1">
                     <span className={`dot ${s ?? ""}`} />
                     <span className="host-name">{h.name}</span>
+                    <button
+                      className="host-more"
+                      title="편집 / 삭제"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                        setCtx({ x: r.right, y: r.bottom, h });
+                      }}
+                    >
+                      ⋯
+                    </button>
                   </div>
                   <div className="host-line2">{h.user}@{h.addr}</div>
                 </div>
@@ -397,8 +423,7 @@ export default function App() {
           <ProcTable
             frame={frame}
             search={search}
-            sortKey={sortKey}
-            sortDir={sortDir}
+            sort={sort}
             selectedPid={selectedPid}
             onSort={onSort}
             onSelect={setSelectedPid}
