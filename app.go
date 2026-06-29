@@ -25,9 +25,6 @@ type App struct {
 	rec   *record.Recorder
 	rpmFS fs.FS
 
-	mu        sync.Mutex
-	allowQuit bool // set once the user has resolved the on-exit save prompt
-
 	logMu     sync.Mutex
 	logFrames map[string][]monitor.Frame // currently opened log: hostId -> frames in order
 }
@@ -73,14 +70,27 @@ func (a *App) startup(ctx context.Context) {
 // to the UI.
 func (a *App) onFrame(f monitor.Frame) {
 	if a.rec != nil {
-		a.rec.Record(f)
+		a.rec.Feed(f)
 	}
 	wruntime.EventsEmit(a.ctx, "frame", f)
 }
 
 func (a *App) onStatus(hostID, state, detail string) {
+	// Safety: if the host we're recording (immediate, client-side) drops, stop
+	// the recording so nothing keeps writing to a half-dead stream.
+	if (state == "stopped" || state == "error") && a.rec != nil &&
+		a.rec.IsRecording() && a.rec.RecordingHost() == hostID {
+		path := a.rec.StopFile()
+		a.emitRecording(false, "", path, true)
+	}
 	wruntime.EventsEmit(a.ctx, "status", map[string]string{
 		"hostId": hostID, "state": state, "detail": detail,
+	})
+}
+
+func (a *App) emitRecording(active bool, hostID, path string, auto bool) {
+	wruntime.EventsEmit(a.ctx, "recording", map[string]interface{}{
+		"active": active, "hostId": hostID, "path": path, "auto": auto,
 	})
 }
 
@@ -120,7 +130,7 @@ func (a *App) DeleteHost(id string) error {
 
 // Connect dials the host, probes it, uploads the sampler and starts streaming.
 // Frames thereafter arrive via the "frame" event. Returns probed capabilities.
-func (a *App) Connect(id string) (monitor.Capabilities, error) {
+func (a *App) Connect(id string, intervalSec int) (monitor.Capabilities, error) {
 	h, ok, err := a.hosts.Get(id)
 	if err != nil {
 		return monitor.Capabilities{}, err
@@ -128,11 +138,17 @@ func (a *App) Connect(id string) (monitor.Capabilities, error) {
 	if !ok {
 		return monitor.Capabilities{}, fmt.Errorf("host %s not found", id)
 	}
-	return a.mgr.Start(a.ctx, h)
+	return a.mgr.Start(a.ctx, h, intervalSec)
 }
 
 func (a *App) Disconnect(id string) {
 	a.mgr.Stop(id)
+}
+
+// SetInterval changes the live refresh interval (seconds, 1–60) for a connected
+// host, restarting just the sampler stream.
+func (a *App) SetInterval(id string, intervalSec int) error {
+	return a.mgr.SetInterval(id, intervalSec)
 }
 
 // NethogsInstall (manual button): install nethogs offline from the embedded
@@ -156,12 +172,6 @@ func (a *App) ProcessHistory(hostID string, pid int) []record.Point {
 	return a.rec.History(hostID, pid)
 }
 
-// ---- Logging ----
-
-func (a *App) IsLogNamed() bool {
-	return a.rec != nil && a.rec.IsNamed()
-}
-
 // desktopDir returns the current OS user's Desktop, falling back to the home
 // directory. Works the same on Windows (C:\Users\<u>\Desktop) and macOS
 // (/Users/<u>/Desktop).
@@ -177,20 +187,26 @@ func desktopDir() string {
 	return home
 }
 
-// defaultLogName suggests a timestamped filename for the save dialog.
 func defaultLogName() string {
 	return "rtaskmgr-log-" + time.Now().Format("20060102-150405") + ".ndjson"
 }
 
-// SaveLogDialog is the Ctrl+S path: it opens a native Save As dialog defaulting
-// to the user's Desktop, then writes (and keeps appending) the capture there.
-// Returns the chosen absolute path, or "" if the user cancelled.
-func (a *App) SaveLogDialog() (string, error) {
+// ---- Immediate recording (client-side, explicit) ----
+
+func (a *App) IsRecording() bool { return a.rec != nil && a.rec.IsRecording() }
+
+// StartRecording opens a native Save As (Desktop default) and begins writing the
+// given host's frames there. Recording is explicit — nothing records until this
+// is called. Returns the chosen path, or "" if cancelled.
+func (a *App) StartRecording(hostID string) (string, error) {
 	if a.rec == nil {
 		return "", fmt.Errorf("recorder unavailable")
 	}
+	if hostID == "" {
+		return "", fmt.Errorf("기록할 호스트를 먼저 선택하세요")
+	}
 	path, err := wruntime.SaveFileDialog(a.ctx, wruntime.SaveDialogOptions{
-		Title:            "기록 저장 위치 선택",
+		Title:            "실시간 기록 저장 위치",
 		DefaultDirectory: desktopDir(),
 		DefaultFilename:  defaultLogName(),
 		Filters:          []wruntime.FileFilter{{DisplayName: "rtaskmgr 로그 (*.ndjson)", Pattern: "*.ndjson"}},
@@ -198,7 +214,79 @@ func (a *App) SaveLogDialog() (string, error) {
 	if err != nil || path == "" {
 		return "", err
 	}
-	return a.rec.SaveAs(path)
+	if err := a.rec.StartFile(hostID, path); err != nil {
+		return "", err
+	}
+	a.emitRecording(true, hostID, path, false)
+	return path, nil
+}
+
+// StopRecording finalizes the active immediate recording.
+func (a *App) StopRecording() string {
+	if a.rec == nil {
+		return ""
+	}
+	path := a.rec.StopFile()
+	a.emitRecording(false, "", path, false)
+	return path
+}
+
+// ---- Scheduled recording (server-side, detached) ----
+
+func (a *App) StartScheduled(hostID string, durationSec int) (monitor.RecMeta, error) {
+	name := hostID
+	if a.hosts != nil {
+		if h, ok, _ := a.hosts.Get(hostID); ok && h.Name != "" {
+			name = h.Name
+		}
+	}
+	return a.mgr.StartScheduled(hostID, durationSec, name)
+}
+
+func (a *App) ListScheduled(hostID string) ([]monitor.RecMeta, error) {
+	return a.mgr.ListScheduled(hostID)
+}
+
+func (a *App) StopScheduled(hostID, id string) error {
+	return a.mgr.StopScheduled(hostID, id)
+}
+
+func (a *App) DeleteScheduled(hostID, id string) error {
+	return a.mgr.DeleteScheduled(hostID, id)
+}
+
+// DownloadScheduledAndPlay fetches a server-side recording, decompresses it, and
+// loads it into the playback buffer — returns LogMeta so the UI can open it like
+// a local log.
+func (a *App) DownloadScheduledAndPlay(hostID, id string) (LogMeta, error) {
+	frames, err := a.mgr.DownloadScheduled(hostID, id)
+	if err != nil {
+		return LogMeta{}, err
+	}
+	if len(frames) == 0 {
+		return LogMeta{}, fmt.Errorf("기록에 프레임이 없습니다 (아직 데이터가 쌓이지 않았을 수 있음)")
+	}
+	byHost := map[string][]monitor.Frame{}
+	for _, f := range frames {
+		byHost[f.HostID] = append(byHost[f.HostID], f)
+	}
+	a.logMu.Lock()
+	a.logFrames = byHost
+	a.logMu.Unlock()
+
+	meta := LogMeta{Path: id}
+	for hid, fr := range byHost {
+		name := hid
+		if a.hosts != nil {
+			if h, ok, _ := a.hosts.Get(hid); ok && h.Name != "" {
+				name = h.Name
+			}
+		}
+		meta.Hosts = append(meta.Hosts, LogHostInfo{
+			ID: hid, Name: name, Frames: len(fr), StartT: fr[0].T, EndT: fr[len(fr)-1].T,
+		})
+	}
+	return meta, nil
 }
 
 // ---- Log playback (reader) ----
@@ -264,56 +352,17 @@ func (a *App) LogFrames(hostID string) []monitor.Frame {
 	return a.logFrames[hostID]
 }
 
-// beforeClose handles the unsaved-capture prompt entirely with native dialogs:
-// a save/don't-save/cancel question, and (on save) a Save As dialog defaulting
-// to the Desktop. Returns true to keep the window open.
+// beforeClose finalizes any active immediate recording (the file the user chose
+// is already real, so just close it cleanly) and tears down sessions. Scheduled
+// server-side recordings intentionally keep running on the host. Returns false
+// to allow the window to close.
+//
+// Note: immediate recording is client-side; closing the app stops it. Scheduled
+// recordings survive on the server until their deadline.
 func (a *App) beforeClose(ctx context.Context) bool {
-	a.mu.Lock()
-	allow := a.allowQuit
-	a.mu.Unlock()
-	if allow {
-		a.mgr.StopAll()
-		return false
+	if a.rec != nil && a.rec.IsRecording() {
+		a.rec.StopFile()
 	}
-	if a.rec == nil || a.rec.IsNamed() || !a.rec.HasData() {
-		if a.rec != nil && !a.rec.IsNamed() {
-			_ = a.rec.Discard()
-		}
-		a.mgr.StopAll()
-		return false
-	}
-
-	choice, err := wruntime.MessageDialog(ctx, wruntime.MessageDialogOptions{
-		Type:          wruntime.QuestionDialog,
-		Title:         "기록 저장",
-		Message:       "이번 세션의 1초 단위 기록을 저장할까요?\n저장하지 않으면 삭제됩니다.",
-		Buttons:       []string{"저장", "저장 안 함", "취소"},
-		DefaultButton: "저장",
-		CancelButton:  "취소",
-	})
-	if err != nil {
-		return true // couldn't ask — stay open rather than lose data
-	}
-	switch choice {
-	case "저장", "Yes":
-		path, perr := a.SaveLogDialog()
-		if perr != nil || path == "" {
-			return true // save cancelled/failed — keep the window open
-		}
-		a.allowQuitNow()
-		return false
-	case "저장 안 함", "No":
-		_ = a.rec.Discard()
-		a.allowQuitNow()
-		return false
-	default: // "취소" / closed
-		return true
-	}
-}
-
-func (a *App) allowQuitNow() {
-	a.mu.Lock()
-	a.allowQuit = true
-	a.mu.Unlock()
 	a.mgr.StopAll()
+	return false
 }

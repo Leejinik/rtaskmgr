@@ -201,6 +201,22 @@ body,
   font-weight: 400;
   margin-left: 8px;
 }
+.refresh-sel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-mute);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.refresh-sel select {
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  outline: none;
+}
 
 /* ---- context menu ---- */
 .ctxmenu {
@@ -372,6 +388,10 @@ th .arrow .ord {
   color: var(--text-mute);
   font-size: 9px;
   margin-left: 1px;
+}
+th .arrow.base {
+  color: var(--text-mute);
+  opacity: 0.55;
 }
 
 table.proc tbody td {

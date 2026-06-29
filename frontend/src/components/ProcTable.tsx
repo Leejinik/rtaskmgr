@@ -7,7 +7,7 @@ interface Props {
   search: string;
   sort: SortSpec[];
   selectedPid: number | null;
-  onSort: (k: SortKey, additive: boolean) => void;
+  onSort: (k: SortKey) => void;
   onSelect: (pid: number) => void;
   onOpen: (pid: number) => void;
 }
@@ -65,13 +65,20 @@ export default function ProcTable({
   const maxNet = Math.max(1, ...netRows.map((p) => p.net));
   const totalNet = netRows.reduce((s, p) => s + p.net, 0);
 
+  const cpuInSort = sort.some((s) => s.key === "cpu");
   const arrow = (k: SortKey) => {
     const i = sort.findIndex((s) => s.key === k);
-    if (i < 0) return null;
+    if (i < 0) {
+      // CPU descending is the always-on base sort; show a faint marker for it.
+      if (k === "cpu" && !cpuInSort) {
+        return <span className="arrow base" title="기본 정렬 (CPU 내림차순)">▼</span>;
+      }
+      return null;
+    }
     return (
       <span className="arrow">
         {sort[i].dir === 1 ? "▲" : "▼"}
-        {sort.length > 1 ? <sub className="ord">{i + 1}</sub> : null}
+        <sub className="ord">{i + 1}</sub>
       </span>
     );
   };
@@ -90,32 +97,32 @@ export default function ProcTable({
           <col style={{ width: "9.25%" }} />
         </colgroup>
         <thead>
-          <tr title="클릭: 정렬 · Shift+클릭: 다중 정렬 추가/토글 (최대 3단계)">
-            <th className="left" onClick={(e) => onSort("name", e.shiftKey)}>
+          <tr title="클릭마다 오름차순 → 내림차순 → 정렬 해제. 클릭한 순서대로 우선순위(①②③), 최대 3개. 모두 해제하면 CPU 내림차순.">
+            <th className="left" onClick={() => onSort("name")}>
               <span className="lbl">이름</span>{arrow("name")}
             </th>
-            <th onClick={(e) => onSort("pid", e.shiftKey)}>
+            <th onClick={() => onSort("pid")}>
               <span className="lbl">PID</span>{arrow("pid")}
             </th>
-            <th onClick={(e) => onSort("user", e.shiftKey)}>
+            <th onClick={() => onSort("user")}>
               <span className="lbl">사용자</span>{arrow("user")}
             </th>
-            <th className="left" onClick={(e) => onSort("service", e.shiftKey)}>
+            <th className="left" onClick={() => onSort("service")}>
               <span className="lbl">서비스</span>{arrow("service")}
             </th>
-            <th onClick={(e) => onSort("cpu", e.shiftKey)}>
+            <th onClick={() => onSort("cpu")}>
               <span className="agg">{frame.cpu.toFixed(0)}%</span>
               <span className="lbl">CPU{arrow("cpu")}</span>
             </th>
-            <th onClick={(e) => onSort("memPct", e.shiftKey)}>
+            <th onClick={() => onSort("memPct")}>
               <span className="agg">{frame.mem.toFixed(0)}%</span>
               <span className="lbl">메모리{arrow("memPct")}</span>
             </th>
-            <th onClick={(e) => onSort("disk", e.shiftKey)}>
+            <th onClick={() => onSort("disk")}>
               <span className="agg">{bytesRate(totalDisk)}</span>
               <span className="lbl">디스크{arrow("disk")}</span>
             </th>
-            <th onClick={(e) => onSort("net", e.shiftKey)}>
+            <th onClick={() => onSort("net")}>
               <span className="agg">{netRows.length ? netRate(totalNet) : "—"}</span>
               <span className="lbl">네트워크{arrow("net")}</span>
             </th>

@@ -16,8 +16,12 @@ package main
 
 import (
 	"bufio"
+	"compress/gzip"
+	"flag"
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -60,10 +64,63 @@ type prevProc struct {
 }
 
 func main() {
-	interval := 1 * time.Second
-	if len(os.Args) > 1 {
-		if n, err := strconv.Atoi(os.Args[1]); err == nil && n > 0 {
-			interval = time.Duration(n) * time.Second
+	// Flags. Backwards compatible: a bare positional integer (old "sampler 1")
+	// is still accepted as the interval.
+	var (
+		intervalSec = flag.Int("i", 1, "sampling interval seconds")
+		maxSec      = flag.Int("max", 0, "hard stop after N seconds (0 = unlimited); safety cap for scheduled recordings")
+		outPath     = flag.String("o", "", "write NDJSON to this file (.gz = gzip) instead of stdout")
+		minFreeMB   = flag.Int("minfree", 512, "stop when the output filesystem free space drops below this many MB")
+	)
+	flag.Parse()
+	if rest := flag.Args(); len(rest) > 0 {
+		if n, err := strconv.Atoi(rest[0]); err == nil && n > 0 {
+			*intervalSec = n
+		}
+	}
+	if *intervalSec <= 0 {
+		*intervalSec = 1
+	}
+	interval := time.Duration(*intervalSec) * time.Second
+
+	// Output target: stdout (live streaming) or a file (scheduled recording),
+	// optionally gzip-compressed. File mode also enforces disk-safety guards.
+	var (
+		out      *bufio.Writer
+		closers  []io.Closer
+		outDir   string
+		fileMode = *outPath != ""
+		gz       *gzip.Writer
+	)
+	if fileMode {
+		outDir = filepath.Dir(*outPath)
+		f, err := os.Create(*outPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "open output:", err)
+			os.Exit(1)
+		}
+		var w io.Writer = f
+		if strings.HasSuffix(*outPath, ".gz") {
+			gz = gzip.NewWriter(f)
+			w = gz
+			closers = append(closers, gz)
+		}
+		closers = append(closers, f)
+		out = bufio.NewWriter(w)
+	} else {
+		out = bufio.NewWriter(os.Stdout)
+	}
+	stop := func(reason string) {
+		out.Flush()
+		// Close in append order: the gzip writer first (so it flushes its
+		// trailer into the file) and only then the underlying file. Closing the
+		// file first would truncate the gzip stream ("unexpected end of file").
+		for _, c := range closers {
+			c.Close()
+		}
+		if fileMode {
+			// Marker the host-side lister/Go reads to know recording finished.
+			_ = os.WriteFile(*outPath+".done", []byte(reason+"\n"), 0o600)
 		}
 	}
 
@@ -75,7 +132,17 @@ func main() {
 	prev := map[int]prevProc{}
 	var prevTotal uint64
 
-	out := bufio.NewWriter(os.Stdout)
+	var deadline time.Time
+	if *maxSec > 0 {
+		deadline = time.Now().Add(time.Duration(*maxSec) * time.Second)
+	}
+	minFreeBytes := uint64(*minFreeMB) * 1024 * 1024
+	frameNo := 0
+
+	// On SIGTERM/SIGINT (manual stop) finalize the file cleanly so the gzip
+	// trailer is written — otherwise the capture would be unreadable.
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, syscall.SIGTERM, syscall.SIGINT)
 
 	// Prime deltas: take a baseline, sleep, then emit on every subsequent tick.
 	prevTotal = readTotalJiffies()
@@ -83,7 +150,26 @@ func main() {
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	for now := range ticker.C {
+	for {
+		var now time.Time
+		select {
+		case <-sigc:
+			stop("signal")
+			return
+		case now = <-ticker.C:
+		}
+		// Safety: hard time cap (scheduled recordings) and disk free-space guard.
+		if !deadline.IsZero() && now.After(deadline) {
+			stop("deadline")
+			return
+		}
+		if fileMode {
+			frameNo++
+			if frameNo%10 == 0 && freeBytes(outDir) < minFreeBytes {
+				stop("low-disk")
+				return
+			}
+		}
 		curTotal := readTotalJiffies()
 		totalDelta := float64(curTotal - prevTotal)
 		if totalDelta <= 0 {
@@ -159,7 +245,19 @@ func main() {
 
 		writeJSON(out, f)
 		out.Flush()
+		if gz != nil && frameNo%10 == 0 {
+			gz.Flush() // periodic sync point so a crash loses at most ~10s
+		}
 	}
+}
+
+// freeBytes returns the available bytes on the filesystem holding dir.
+func freeBytes(dir string) uint64 {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return ^uint64(0) // unknown → don't trip the guard
+	}
+	return st.Bavail * uint64(st.Bsize)
 }
 
 // ---- /proc parsing helpers ----

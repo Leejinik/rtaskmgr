@@ -11,6 +11,8 @@ package monitor
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -29,6 +31,24 @@ import (
 	"rtaskmgr/internal/agent"
 	"rtaskmgr/internal/host"
 )
+
+// MaxScheduledSeconds caps scheduled recordings at 7 days — a hard upper bound
+// enforced here and in the UI so a forgotten recording can't fill the disk.
+const MaxScheduledSeconds = 7 * 24 * 3600
+
+// RecMeta describes one server-side scheduled recording.
+type RecMeta struct {
+	ID          string `json:"id"`
+	HostID      string `json:"hostId"`
+	HostName    string `json:"hostName"`
+	File        string `json:"file"` // absolute path on the host
+	StartT      int64  `json:"startT"`
+	PlannedEndT int64  `json:"plannedEndT"`
+	DurationSec int    `json:"durationSec"`
+	IntervalSec int    `json:"intervalSec"`
+	Status      string `json:"status"` // "running" | "done"
+	SizeBytes   int64  `json:"sizeBytes"`
+}
 
 // samplerName is content-addressed (RemoteName + short hash of the binary), so
 // every app instance / user stages the SAME file. That lets concurrent sessions
@@ -93,15 +113,17 @@ type StatusFunc func(hostID, state, detail string)
 type NethogsFunc func(hostID string, active, installedByUs bool, msg string)
 
 type session struct {
-	client    *ssh.Client
-	ctx       context.Context
-	cancel    context.CancelFunc
-	bin       string // staged sampler path
-	stageDir  string // user-owned, exec-capable dir (e.g. /home/liz)
-	useSudo   bool   // wrap remote commands in sudo
-	elevated  bool   // root or working sudo (required for nethogs/dnf)
-	password  string
-	rhelMajor string
+	client       *ssh.Client
+	ctx          context.Context
+	cancel       context.CancelFunc
+	streamCancel context.CancelFunc // cancels just the current sampler run (interval changes)
+	interval     int                // live sampling interval, seconds
+	bin          string             // staged sampler path
+	stageDir     string             // user-owned, exec-capable dir (e.g. /home/liz)
+	useSudo      bool               // wrap remote commands in sudo
+	elevated     bool               // root or working sudo (required for nethogs/dnf)
+	password     string
+	rhelMajor    string
 
 	netMu           sync.Mutex
 	net             map[int]int64 // pid -> bytes/s (sent+recv); valid while nhActive
@@ -187,10 +209,21 @@ func (m *Manager) get(hostID string) *session {
 	return m.sessions[hostID]
 }
 
+// clampInterval keeps the live sampling interval within 1..60 seconds.
+func clampInterval(sec int) int {
+	if sec < 1 {
+		return 10
+	}
+	if sec > 60 {
+		return 60
+	}
+	return sec
+}
+
 // Start connects to h, probes it, uploads the sampler, and launches the
-// streaming goroutine. It returns the probed capabilities so the UI can render
-// which columns are live. Any existing session for the same host is replaced.
-func (m *Manager) Start(parent context.Context, h host.Host) (Capabilities, error) {
+// streaming goroutine at the given live sampling interval (seconds). It returns
+// the probed capabilities. Any existing session for the same host is replaced.
+func (m *Manager) Start(parent context.Context, h host.Host, intervalSec int) (Capabilities, error) {
 	m.Stop(h.ID)
 	m.status(h.ID, "connecting", h.Addr)
 
@@ -233,6 +266,7 @@ func (m *Manager) Start(parent context.Context, h host.Host) (Capabilities, erro
 		client:    client,
 		ctx:       ctx,
 		cancel:    cancel,
+		interval:  clampInterval(intervalSec),
 		bin:       bin,
 		stageDir:  caps.StageDir,
 		useSudo:   useSudoWrapper,
@@ -244,24 +278,59 @@ func (m *Manager) Start(parent context.Context, h host.Host) (Capabilities, erro
 	m.sessions[h.ID] = s
 	m.mu.Unlock()
 
-	go m.stream(ctx, h.ID, s)
+	m.launchStream(h.ID, s)
 	m.status(h.ID, "streaming", "")
 	return caps, nil
 }
 
-// stream runs the sampler and forwards each NDJSON line as a Frame, overlaying
-// nethogs throughput onto each process's Net field, until ctx is cancelled or
-// the connection drops.
-func (m *Manager) stream(ctx context.Context, hostID string, s *session) {
-	defer func() {
-		m.mu.Lock()
-		if cur, ok := m.sessions[hostID]; ok && cur == s {
-			delete(m.sessions, hostID)
-			s.client.Close()
-		}
-		m.mu.Unlock()
-	}()
+// SetInterval changes the live sampling interval for a connected host by
+// restarting just the sampler stream (the SSH client and any nethogs stream stay
+// up).
+func (m *Manager) SetInterval(hostID string, intervalSec int) error {
+	s := m.get(hostID)
+	if s == nil {
+		return fmt.Errorf("호스트가 연결되어 있지 않습니다")
+	}
+	s.interval = clampInterval(intervalSec)
+	if s.streamCancel != nil {
+		s.streamCancel() // stop the current sampler run; launchStream starts a new one
+	}
+	m.launchStream(hostID, s)
+	return nil
+}
 
+// teardown removes a session and closes its client (real disconnect).
+func (m *Manager) teardown(hostID string, s *session) {
+	m.mu.Lock()
+	if cur, ok := m.sessions[hostID]; ok && cur == s {
+		delete(m.sessions, hostID)
+		s.client.Close()
+	}
+	m.mu.Unlock()
+}
+
+// launchStream starts a sampler run under a child context so it can be restarted
+// (interval changes) without dropping the SSH session. The session is only torn
+// down when the run ends on its own (connection dropped) — not when we cancel it
+// for a restart.
+func (m *Manager) launchStream(hostID string, s *session) {
+	sctx, scancel := context.WithCancel(s.ctx)
+	s.streamCancel = scancel
+	go func() {
+		m.runStream(sctx, hostID, s)
+		if sctx.Err() == nil {
+			// Ended on its own: the connection dropped or the sampler died.
+			m.teardown(hostID, s)
+			m.status(hostID, "stopped", "stream ended")
+		}
+		// Otherwise cancelled (interval restart or Stop) — leave teardown to them.
+	}()
+}
+
+// runStream runs the sampler and forwards each NDJSON line as a Frame, overlaying
+// nethogs throughput onto each process's Net field, until ctx is cancelled or
+// the connection drops. It does NOT tear down the session (the caller decides).
+func (m *Manager) runStream(ctx context.Context, hostID string, s *session) {
 	sess, err := s.client.NewSession()
 	if err != nil {
 		m.status(hostID, "error", "session: "+err.Error())
@@ -269,10 +338,10 @@ func (m *Manager) stream(ctx context.Context, hostID string, s *session) {
 	}
 	defer sess.Close()
 
-	cmd := s.bin + " 1"
+	cmd := fmt.Sprintf("%s -i %d", s.bin, s.interval)
 	if s.useSudo {
 		sess.Stdin = strings.NewReader(s.password + "\n")
-		cmd = fmt.Sprintf("sudo -S -p '' %s 1", s.bin)
+		cmd = fmt.Sprintf("sudo -S -p '' %s -i %d", s.bin, s.interval)
 	}
 
 	stdout, err := sess.StdoutPipe()
@@ -319,9 +388,6 @@ func (m *Manager) stream(ctx context.Context, hostID string, s *session) {
 			}
 		}
 		m.onFrame(f)
-	}
-	if ctx.Err() == nil {
-		m.status(hostID, "stopped", "stream ended")
 	}
 }
 
@@ -583,6 +649,192 @@ func (m *Manager) plainRun(s *session, inner string) (string, error) {
 func (m *Manager) commandExists(s *session, name string) bool {
 	out, _ := m.sudoRun(s, "command -v "+name+" >/dev/null 2>&1 && echo YES || echo NO")
 	return strings.Contains(out, "YES")
+}
+
+// ---- scheduled (server-side, detached) recording ----
+
+func recDirFor(s *session) string {
+	d := s.stageDir
+	if d == "" {
+		d = "/var/tmp"
+	}
+	return d + "/.rtaskmgr-rec"
+}
+
+// StartScheduled launches a detached server-side recording that survives the
+// client disconnecting and self-stops after durationSec (hard-capped at 7 days).
+// The sampler writes gzip NDJSON and aborts early if the disk runs low.
+func (m *Manager) StartScheduled(hostID string, durationSec int, hostName string) (RecMeta, error) {
+	s := m.get(hostID)
+	if s == nil {
+		return RecMeta{}, fmt.Errorf("호스트가 연결되어 있지 않습니다")
+	}
+	if durationSec <= 0 {
+		return RecMeta{}, fmt.Errorf("기록 시간이 0입니다")
+	}
+	if durationSec > MaxScheduledSeconds {
+		durationSec = MaxScheduledSeconds
+	}
+	if s.stageDir == "" {
+		return RecMeta{}, fmt.Errorf("기록을 저장할 디렉터리를 찾지 못했습니다")
+	}
+	if !samplerPresent(s.client, s.bin, len(agent.SamplerBinary)) {
+		if err := uploadSampler(s.client, s.bin); err != nil {
+			return RecMeta{}, fmt.Errorf("샘플러 업로드 실패: %w", err)
+		}
+	}
+
+	recDir := recDirFor(s)
+	now := time.Now()
+	id := fmt.Sprintf("rec-%d", now.UnixMilli())
+	file := recDir + "/" + id + ".ndjson.gz"
+	meta := RecMeta{
+		ID: id, HostID: hostID, HostName: hostName, File: file,
+		StartT:      now.UnixMilli(),
+		PlannedEndT: now.Add(time.Duration(durationSec) * time.Second).UnixMilli(),
+		DurationSec: durationSec, IntervalSec: 1, Status: "running",
+	}
+	metaJSON, _ := json.Marshal(meta)
+
+	if _, err := m.plainRun(s, "mkdir -p "+recDir); err != nil {
+		return meta, err
+	}
+	if err := uploadBytes(s.client, metaJSON, recDir+"/"+id+".meta.json", false); err != nil {
+		return meta, err
+	}
+	// setsid detaches from the SSH session's process group so it keeps running
+	// after we disconnect. Paths are app-controlled (no spaces) so no quoting.
+	launch := fmt.Sprintf(
+		"setsid %s -i 1 -max %d -o %s -minfree 512 >/dev/null 2>&1 </dev/null & echo OK",
+		s.bin, durationSec, file)
+	if out, err := m.plainRun(s, launch); err != nil {
+		return meta, fmt.Errorf("실행 실패: %s", strings.TrimSpace(out))
+	}
+	return meta, nil
+}
+
+// ListScheduled returns the scheduled recordings present on the host with live
+// size/status.
+func (m *Manager) ListScheduled(hostID string) ([]RecMeta, error) {
+	s := m.get(hostID)
+	if s == nil {
+		return nil, fmt.Errorf("호스트가 연결되어 있지 않습니다")
+	}
+	recDir := recDirFor(s)
+	script := `d=` + recDir + `; [ -d "$d" ] || exit 0; ` +
+		`for mf in "$d"/*.meta.json; do [ -e "$mf" ] || continue; ` +
+		`id=$(basename "$mf" .meta.json); f="$d/$id.ndjson.gz"; ` +
+		`sz=$(stat -c%s "$f" 2>/dev/null || echo 0); ` +
+		`run=0; pgrep -f "$f" >/dev/null 2>&1 && run=1; ` +
+		`echo "STAT|$id|$sz|$run"; echo "META|$(base64 -w0 "$mf")"; done`
+	out, err := m.plainRun(s, script)
+	if err != nil {
+		return nil, err
+	}
+
+	metas := map[string]*RecMeta{}
+	order := []string{}
+	stats := map[string][2]int64{} // id -> {size, running}
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "META|"):
+			raw, derr := base64.StdEncoding.DecodeString(strings.TrimSpace(line[5:]))
+			if derr != nil {
+				continue
+			}
+			var rm RecMeta
+			if json.Unmarshal(raw, &rm) == nil && rm.ID != "" {
+				if _, ok := metas[rm.ID]; !ok {
+					order = append(order, rm.ID)
+				}
+				metas[rm.ID] = &rm
+			}
+		case strings.HasPrefix(line, "STAT|"):
+			parts := strings.Split(line[5:], "|")
+			if len(parts) == 3 {
+				sz, _ := strconv.ParseInt(parts[1], 10, 64)
+				run, _ := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64)
+				stats[parts[0]] = [2]int64{sz, run}
+			}
+		}
+	}
+	out2 := make([]RecMeta, 0, len(order))
+	for _, id := range order {
+		rm := metas[id]
+		if st, ok := stats[id]; ok {
+			rm.SizeBytes = st[0]
+			if st[1] == 1 {
+				rm.Status = "running"
+			} else {
+				rm.Status = "done"
+			}
+		}
+		out2 = append(out2, *rm)
+	}
+	return out2, nil
+}
+
+// StopScheduled signals the sampler for one recording to stop; it finalizes the
+// gzip file cleanly on SIGTERM.
+func (m *Manager) StopScheduled(hostID, id string) error {
+	s := m.get(hostID)
+	if s == nil {
+		return fmt.Errorf("호스트가 연결되어 있지 않습니다")
+	}
+	file := recDirFor(s) + "/" + id + ".ndjson.gz"
+	_, err := m.plainRun(s,
+		"pkill -TERM -f "+file+" 2>/dev/null; sleep 1; "+
+			"pgrep -f "+file+" >/dev/null 2>&1 && pkill -KILL -f "+file+"; echo done")
+	return err
+}
+
+// DeleteScheduled removes a recording and its sidecars from the host.
+func (m *Manager) DeleteScheduled(hostID, id string) error {
+	s := m.get(hostID)
+	if s == nil {
+		return fmt.Errorf("호스트가 연결되어 있지 않습니다")
+	}
+	d := recDirFor(s)
+	_, err := m.plainRun(s, fmt.Sprintf("rm -f %s/%s.ndjson.gz %s/%s.ndjson.gz.done %s/%s.meta.json; echo done",
+		d, id, d, id, d, id))
+	return err
+}
+
+// DownloadScheduled fetches a recording, decompresses it, and returns its
+// frames for playback. The gz is base64-streamed over the existing SSH session.
+func (m *Manager) DownloadScheduled(hostID, id string) ([]Frame, error) {
+	s := m.get(hostID)
+	if s == nil {
+		return nil, fmt.Errorf("호스트가 연결되어 있지 않습니다")
+	}
+	file := recDirFor(s) + "/" + id + ".ndjson.gz"
+	out, err := m.plainRun(s, "base64 -w0 "+file)
+	if err != nil {
+		return nil, fmt.Errorf("다운로드 실패: %s", tailLines(out, 2))
+	}
+	gzBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(out))
+	if err != nil {
+		return nil, fmt.Errorf("디코드 실패: %w", err)
+	}
+	gzr, err := gzip.NewReader(bytes.NewReader(gzBytes))
+	if err != nil {
+		return nil, fmt.Errorf("gzip 열기 실패: %w", err)
+	}
+	defer gzr.Close()
+	var frames []Frame
+	sc := bufio.NewScanner(gzr)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var f Frame
+		if json.Unmarshal(line, &f) == nil {
+			frames = append(frames, f)
+		}
+	}
+	return frames, nil
 }
 
 // ---- SSH plumbing ----

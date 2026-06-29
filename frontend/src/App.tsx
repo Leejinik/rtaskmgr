@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { EventsOn } from "../wailsjs/runtime";
 import {
-  ListHosts, Connect, Disconnect, DeleteHost,
-  SaveLogDialog, IsLogNamed,
+  ListHosts, Connect, Disconnect, DeleteHost, SetInterval,
+  StartRecording, StopRecording,
   NethogsInstall, NethogsRollback,
   OpenLogDialog, LogFrames,
 } from "../wailsjs/go/main/App";
+
+const REFRESH_OPTS = [1, 2, 3, 5, 10, 15, 20, 30, 60];
 import { host, main } from "../wailsjs/go/models";
 import { Frame, HostStatus, Capabilities, SortKey, SortSpec, MAX_SORT } from "./types";
 import ProcTable from "./components/ProcTable";
@@ -13,6 +15,7 @@ import DetailModal from "./components/DetailModal";
 import ConnectDialog from "./components/ConnectDialog";
 import ContextMenu from "./components/ContextMenu";
 import PlaybackBar from "./components/PlaybackBar";
+import ScheduledModal from "./components/ScheduledModal";
 
 interface Playback {
   meta: main.LogMeta;
@@ -35,15 +38,23 @@ export default function App() {
   const [nhBusy, setNhBusy] = useState<Record<string, boolean>>({});
 
   const [search, setSearch] = useState("");
-  const [sort, setSort] = useState<SortSpec[]>([{ key: "cpu", dir: -1 }]);
+  // Empty = the implicit default (CPU descending), which is always the lowest-
+  // priority tiebreaker. Explicit sorts layer ON TOP of it, so clicking any
+  // column visibly reorders while CPU-desc still breaks ties.
+  const [sort, setSort] = useState<SortSpec[]>([]);
   const [selectedPid, setSelectedPid] = useState<number | null>(null);
   const [detailPid, setDetailPid] = useState<number | null>(null);
   const [playback, setPlayback] = useState<Playback | null>(null);
 
   const [dialog, setDialog] = useState<{ open: boolean; editing?: host.Host }>({ open: false });
   const [ctx, setCtx] = useState<{ x: number; y: number; h: host.Host } | null>(null);
-  const [logName, setLogName] = useState("");
-  const [recNamed, setRecNamed] = useState(false);
+  const [recording, setRecording] = useState<{ active: boolean; hostId: string; path: string }>(
+    { active: false, hostId: "", path: "" }
+  );
+  const [schedOpen, setSchedOpen] = useState(false);
+  const [refreshSec, setRefreshSec] = useState<number>(
+    () => Number(localStorage.getItem("rtm.interval")) || 10
+  );
   const [toast, setToast] = useState("");
 
   const toastTimer = useRef<number | null>(null);
@@ -76,33 +87,42 @@ export default function App() {
       }));
       if (s.msg) showToast(s.msg);
     });
-    return () => { offFrame(); offStatus(); offNet(); };
+    const offRec = EventsOn("recording", (s: any) => {
+      setRecording({ active: s.active, hostId: s.hostId || "", path: s.path || "" });
+      if (s.auto) showToast("연결이 끊겨 실시간 기록을 자동 중지했습니다");
+      else if (s.active) showToast(`기록 시작 — ${s.path}`);
+      else if (s.path) showToast(`기록 종료 — ${s.path}`);
+    });
+    return () => { offFrame(); offStatus(); offNet(); offRec(); };
   }, []);
 
-  // ---- Ctrl+S ----
+  // ---- Ctrl+S toggles immediate recording for the selected host ----
   useEffect(() => {
-    const onKey = async (e: KeyboardEvent) => {
+    const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        if (await IsLogNamed()) {
-          showToast(`기록 중 — ${logName || "저장된 로그"}`);
-          return;
-        }
-        try {
-          const path = await SaveLogDialog(); // native Save As (defaults to Desktop)
-          if (path) {
-            setRecNamed(true);
-            setLogName(basename(path));
-            showToast(`기록 저장 — ${path}`);
-          }
-        } catch (err: any) {
-          showToast(`저장 실패: ${err}`);
-        }
+        void toggleRecord();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [logName]);
+  });
+
+  async function toggleRecord() {
+    try {
+      if (recording.active) {
+        await StopRecording();
+        return;
+      }
+      if (!selectedId) {
+        showToast("기록할 호스트를 먼저 선택하세요");
+        return;
+      }
+      await StartRecording(selectedId); // opens native Save As; emits "recording"
+    } catch (err: any) {
+      showToast(`기록 실패: ${err}`);
+    }
+  }
 
   // ---- log playback ----
   async function openLog() {
@@ -140,7 +160,7 @@ export default function App() {
     setSelectedId(id);
     setStatus((prev) => ({ ...prev, [id]: { state: "connecting", detail: "" } }));
     try {
-      const c = await Connect(id);
+      const c = await Connect(id, refreshSec);
       setCaps((prev) => ({ ...prev, [id]: c }));
       if (!c.sudo) {
         showToast("sudo 비밀번호가 일치하지 않아 몇몇 정보는 비활성화됩니다");
@@ -148,6 +168,16 @@ export default function App() {
     } catch (e: any) {
       showToast(`연결 실패: ${e}`);
     }
+  }
+
+  // changeInterval updates the live refresh interval, persists it as the default,
+  // and applies it immediately to all connected hosts.
+  function changeInterval(sec: number) {
+    setRefreshSec(sec);
+    try { localStorage.setItem("rtm.interval", String(sec)); } catch {}
+    Object.entries(status).forEach(([id, st]) => {
+      if (st.state === "streaming") void SetInterval(id, sec);
+    });
   }
 
   function handleDisconnect(id: string) {
@@ -194,26 +224,26 @@ export default function App() {
     if (selectedId === id) setSelectedId(list[0]?.id ?? null);
   }
 
-  // onSort: plain click = single sort (toggle dir if already primary). Shift+click
-  // = add/toggle this column as an additional level (up to MAX_SORT). CPU-desc
-  // remains the implicit final tiebreaker even when the list is cleared.
-  function onSort(k: SortKey, additive: boolean) {
-    const defDir: 1 | -1 = k === "name" || k === "service" || k === "user" ? 1 : -1;
+  // onSort: each click cycles the column through ascending → descending →
+  // unsorted. Columns accumulate in click order (first click = highest
+  // priority), up to MAX_SORT. When every sort is cleared the table falls back
+  // to the default (CPU descending).
+  function onSort(k: SortKey) {
+    if (!sort.some((s) => s.key === k) && sort.length >= MAX_SORT) {
+      showToast(`정렬은 최대 ${MAX_SORT}개까지 가능합니다`);
+      return;
+    }
     setSort((prev) => {
       const i = prev.findIndex((s) => s.key === k);
-      if (additive) {
-        if (i >= 0) {
-          const n = [...prev];
-          n[i] = { key: k, dir: (n[i].dir === 1 ? -1 : 1) as 1 | -1 };
-          return n;
-        }
-        if (prev.length >= MAX_SORT) return prev; // cap — ignore extra levels
-        return [...prev, { key: k, dir: defDir }];
+      if (i < 0) {
+        return [...prev, { key: k, dir: 1 }]; // new column → ascending
       }
-      if (prev.length === 1 && prev[0].key === k) {
-        return [{ key: k, dir: (prev[0].dir === 1 ? -1 : 1) as 1 | -1 }];
+      if (prev[i].dir === 1) {
+        const n = [...prev]; // ascending → descending
+        n[i] = { key: k, dir: -1 };
+        return n;
       }
-      return [{ key: k, dir: defDir }];
+      return prev.filter((_, idx) => idx !== i); // descending → unsorted (drop)
     });
   }
 
@@ -367,6 +397,14 @@ export default function App() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
+              <label className="refresh-sel" title="화면 갱신 주기 (1~60초)">
+                갱신
+                <select value={refreshSec} onChange={(e) => changeInterval(Number(e.target.value))}>
+                  {REFRESH_OPTS.map((s) => (
+                    <option key={s} value={s}>{s}초</option>
+                  ))}
+                </select>
+              </label>
               {connected && (
                 nethogs[selected.id]?.active ? (
                   <button
@@ -395,6 +433,24 @@ export default function App() {
                       : "네트워크 수집 (nethogs 설치)"}
                   </button>
                 )
+              )}
+              {connected && (
+                <button
+                  className={"toolbtn" + (recording.active && recording.hostId === selected.id ? " danger" : "")}
+                  onClick={toggleRecord}
+                  title="실시간 기록을 내 PC 파일로 저장/중지 (Ctrl+S). 연결이 끊기면 자동 중지됩니다."
+                >
+                  {recording.active && recording.hostId === selected.id ? "■ 기록 중지" : "● 기록"}
+                </button>
+              )}
+              {connected && (
+                <button
+                  className="toolbtn"
+                  onClick={() => setSchedOpen(true)}
+                  title="서버에서 detached로 예약 기록 (클라이언트를 꺼도 계속, 최대 7일)"
+                >
+                  ⏱ 예약 기록…
+                </button>
               )}
             </>
           ) : (
@@ -440,9 +496,11 @@ export default function App() {
             </span>
           )}
           <span style={{ flex: 1 }} />
-          <span className={`rec ${recNamed ? "armed" : ""}`}>
-            ● {recNamed ? `기록 중 — ${logName}` : "임시 기록 중 (Ctrl+S로 저장)"}
-          </span>
+          {recording.active ? (
+            <span className="rec">● 실시간 기록 중 — {basename(recording.path)}</span>
+          ) : (
+            <span style={{ color: "var(--text-mute)" }}>○ 기록 안 함 (● 기록 / Ctrl+S)</span>
+          )}
         </div>
       </main>
 
@@ -451,6 +509,24 @@ export default function App() {
           initial={dialog.editing}
           onSaved={handleSaved}
           onClose={() => setDialog({ open: false })}
+        />
+      )}
+
+      {schedOpen && selected && (
+        <ScheduledModal
+          hostId={selected.id}
+          hostName={selected.name}
+          onClose={() => setSchedOpen(false)}
+          onPlay={(meta) => {
+            setSchedOpen(false);
+            const hid = meta.hosts?.[0]?.id;
+            if (hid) {
+              LogFrames(hid).then((frames) => {
+                setDetailPid(null);
+                setPlayback({ meta, hostId: hid, frames: frames ?? [], index: 0, playing: false });
+              });
+            }
+          }}
         />
       )}
 

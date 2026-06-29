@@ -214,6 +214,37 @@ export namespace monitor {
 		    return a;
 		}
 	}
+	
+	export class RecMeta {
+	    id: string;
+	    hostId: string;
+	    hostName: string;
+	    file: string;
+	    startT: number;
+	    plannedEndT: number;
+	    durationSec: number;
+	    intervalSec: number;
+	    status: string;
+	    sizeBytes: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new RecMeta(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.hostId = source["hostId"];
+	        this.hostName = source["hostName"];
+	        this.file = source["file"];
+	        this.startT = source["startT"];
+	        this.plannedEndT = source["plannedEndT"];
+	        this.durationSec = source["durationSec"];
+	        this.intervalSec = source["intervalSec"];
+	        this.status = source["status"];
+	        this.sizeBytes = source["sizeBytes"];
+	    }
+	}
 
 }
 

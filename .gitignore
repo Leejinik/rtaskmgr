@@ -1,3 +1,6 @@
 build/bin
 node_modules
 frontend/dist
+
+# stray root build artifact from `go build .`
+/rtaskmgr.exe

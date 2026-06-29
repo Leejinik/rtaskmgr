@@ -1,26 +1,18 @@
-// Package record implements the logging state machine.
+// Package record handles client-side recording state.
 //
-// Every frame is appended to a temp NDJSON file the moment it arrives, so the
-// session is always being captured. Two ways it becomes permanent:
-//
-//   - Ctrl+S (SaveAs): the temp file is renamed to <name>.ndjson and recording
-//     continues appending to it ("armed"). Further frames auto-persist.
-//   - On exit: if not yet armed, the UI asks whether to keep it; KeepAs renames
-//     the temp file, Discard deletes it.
-//
-// A bounded in-memory ring of recent frames per host backs the double-click
-// detail view (a process's 1-second CPU/MEM/disk timeline) without re-reading
-// the file.
+// Two independent things live here:
+//   - A bounded in-memory ring of recent frames per host, always on, backing the
+//     double-click detail view (a process's 1-second timeline).
+//   - Explicit FILE recording: the user starts/stops it; while active, frames for
+//     the target host are appended to a chosen .ndjson file on the local machine.
+//     Recording never starts on its own, and is finalized on stop / disconnect /
+//     app close so nothing keeps writing unattended.
 package record
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync"
-	"time"
 
 	"rtaskmgr/internal/monitor"
 )
@@ -64,130 +56,87 @@ func (r *ring) inOrder() []monitor.Frame {
 }
 
 type Recorder struct {
-	mu      sync.Mutex
-	dir     string
-	tmpPath string
+	mu    sync.Mutex
+	rings map[string]*ring
+
+	recMu   sync.Mutex
 	f       *os.File
 	enc     *json.Encoder
-	named   bool
-	saved   string
-	frames  int
-	rings   map[string]*ring
+	recHost string
+	recPath string
 }
 
-// New creates ~/.rtaskmgr/sessions and opens a fresh temp capture file.
 func New() (*Recorder, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-	dir := filepath.Join(home, ".rtaskmgr", "sessions")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, err
-	}
-	tmp := filepath.Join(dir, fmt.Sprintf(".capture-%d.ndjson.tmp", time.Now().UnixMilli()))
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	return &Recorder{
-		dir:     dir,
-		tmpPath: tmp,
-		f:       f,
-		enc:     json.NewEncoder(f),
-		rings:   map[string]*ring{},
-	}, nil
+	return &Recorder{rings: map[string]*ring{}}, nil
 }
 
-// Record appends the frame to the capture file and the host's in-memory ring.
-func (r *Recorder) Record(f monitor.Frame) {
+// Feed pushes every frame into the host's ring and, when file recording is
+// active for that host, appends it to the recording file.
+func (r *Recorder) Feed(f monitor.Frame) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.f != nil {
-		_ = r.enc.Encode(f) // NDJSON: Encode writes one object + newline
-		r.frames++
-	}
 	rg := r.rings[f.HostID]
 	if rg == nil {
 		rg = &ring{}
 		r.rings[f.HostID] = rg
 	}
 	rg.push(f)
+	r.mu.Unlock()
+
+	r.recMu.Lock()
+	if r.f != nil && f.HostID == r.recHost {
+		_ = r.enc.Encode(f)
+	}
+	r.recMu.Unlock()
 }
 
-// SaveAs moves the temp capture to dest (an absolute path the user chose, e.g.
-// on their Desktop) and keeps appending to it. This is the Ctrl+S path. If
-// already armed, it saves under the new path and continues there.
-func (r *Recorder) SaveAs(dest string) (string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if r.f != nil {
-		r.f.Close()
-		r.f = nil
-	}
-	if err := os.Rename(r.tmpPath, dest); err != nil {
-		// Cross-device or already-moved: fall back to copy.
-		if data, rerr := os.ReadFile(r.tmpPath); rerr == nil {
-			if werr := os.WriteFile(dest, data, 0o600); werr == nil {
-				os.Remove(r.tmpPath)
-			} else {
-				return "", werr
-			}
-		} else {
-			return "", err
-		}
-	}
-	f, err := os.OpenFile(dest, os.O_APPEND|os.O_WRONLY, 0o600)
+// StartFile begins appending the target host's frames to path. A previous
+// recording (if any) is finalized first.
+func (r *Recorder) StartFile(hostID, path string) error {
+	r.StopFile()
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		return "", err
+		return err
 	}
+	r.recMu.Lock()
 	r.f = f
 	r.enc = json.NewEncoder(f)
-	r.tmpPath = dest
-	r.named = true
-	r.saved = dest
-	return dest, nil
+	r.recHost = hostID
+	r.recPath = path
+	r.recMu.Unlock()
+	return nil
 }
 
-// Discard closes and deletes the temp capture (exit-without-save path). It does
-// nothing if the session was already armed/saved.
-func (r *Recorder) Discard() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.named {
-		if r.f != nil {
-			r.f.Close()
-			r.f = nil
-		}
-		return nil
-	}
+// StopFile finalizes the active recording and returns its path (or "").
+func (r *Recorder) StopFile() string {
+	r.recMu.Lock()
+	defer r.recMu.Unlock()
+	path := r.recPath
 	if r.f != nil {
 		r.f.Close()
 		r.f = nil
+		r.enc = nil
+		r.recHost = ""
+		r.recPath = ""
 	}
-	return os.Remove(r.tmpPath)
+	return path
 }
 
-// IsNamed reports whether the session has been armed (saved under a name).
-func (r *Recorder) IsNamed() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.named
+func (r *Recorder) IsRecording() bool {
+	r.recMu.Lock()
+	defer r.recMu.Unlock()
+	return r.f != nil
 }
 
-// HasData reports whether any frame has been captured (used to skip the on-exit
-// save prompt for an empty session).
-func (r *Recorder) HasData() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.frames > 0
+func (r *Recorder) RecordingHost() string {
+	r.recMu.Lock()
+	defer r.recMu.Unlock()
+	return r.recHost
 }
 
-func (r *Recorder) SavedPath() string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.saved
+func (r *Recorder) RecordingPath() string {
+	r.recMu.Lock()
+	defer r.recMu.Unlock()
+	return r.recPath
 }
 
 // History returns a process's recent timeline from the in-memory ring.
@@ -211,16 +160,4 @@ func (r *Recorder) History(hostID string, pid int) []Point {
 		}
 	}
 	return out
-}
-
-// sanitize strips path separators and other awkward characters from a
-// user-supplied log name so it stays a single safe filename.
-func sanitize(name string) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		name = fmt.Sprintf("session-%d", time.Now().Unix())
-	}
-	repl := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "*", "_",
-		"?", "_", "\"", "_", "<", "_", ">", "_", "|", "_")
-	return repl.Replace(name)
 }
