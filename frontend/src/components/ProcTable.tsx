@@ -18,10 +18,17 @@ function sortValue(p: Proc, k: SortKey): number | string {
     case "pid": return p.pid;
     case "user": return p.user.toLowerCase();
     case "service": return p.service.toLowerCase();
-    case "cpu": return p.cpu;
-    case "memPct": return p.memPct;
-    case "disk": return diskBps(p.diskR, p.diskW);
-    case "net": return p.net;
+    // Quantize numeric metrics to their on-screen resolution so rows that look
+    // identical tie — letting the next sort column decide. Otherwise sub-display
+    // precision (e.g. CPU 0.02% all shown as "0.0%") drives an invisible order
+    // and the secondary/tertiary sort never visibly engages.
+    case "cpu": return Math.round(p.cpu * 10) / 10; // 0.1 %
+    case "memPct": return Math.round((p.rssKiB / 1024) * 10) / 10; // 0.1 MB (MB is shown)
+    case "disk": {
+      const d = diskBps(p.diskR, p.diskW);
+      return d < 0 ? -1 : Math.round(d / 1024); // KB step
+    }
+    case "net": return p.net < 0 ? -1 : Math.round(p.net / 1024); // KB step
   }
 }
 
