@@ -5,6 +5,8 @@ import { pct, mib, bytesRate, netRate, diskBps, heat } from "../format";
 interface Props {
   frame: Frame;
   search: string;
+  hideKthreads: boolean;
+  topLevelOnly: boolean;
   sort: SortSpec[];
   selectedPid: number | null;
   onSort: (k: SortKey) => void;
@@ -33,11 +35,21 @@ function sortValue(p: Proc, k: SortKey): number | string {
 }
 
 export default function ProcTable({
-  frame, search, sort, selectedPid, onSort, onSelect, onOpen,
+  frame, search, hideKthreads, topLevelOnly, sort, selectedPid, onSort, onSelect, onOpen,
 }: Props) {
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
     let r = frame.procs;
+    if (hideKthreads) {
+      // Kernel threads have an empty cmdline, so the sampler renders them as
+      // "[comm]" (e.g. [kworker/0:1], [kthreadd]). Drop those.
+      r = r.filter((p) => !p.name.startsWith("["));
+    }
+    if (topLevelOnly) {
+      // Only processes directly under pid 0/1 (init or the kernel root) — the
+      // engineer's "root-child" filter that hides everyone else's children.
+      r = r.filter((p) => p.ppid <= 1);
+    }
     if (q) {
       r = r.filter(
         (p) =>
@@ -62,7 +74,7 @@ export default function ProcTable({
       return a.pid - b.pid;
     });
     return sorted;
-  }, [frame, search, sort]);
+  }, [frame, search, hideKthreads, topLevelOnly, sort]);
 
   const maxCpu = Math.max(1, ...rows.map((p) => p.cpu));
   const maxMem = Math.max(1, ...rows.map((p) => p.memPct));

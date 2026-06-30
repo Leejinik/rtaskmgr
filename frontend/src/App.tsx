@@ -38,6 +38,15 @@ export default function App() {
   const [nhBusy, setNhBusy] = useState<Record<string, boolean>>({});
 
   const [search, setSearch] = useState("");
+  const [hideKthreads, setHideKthreads] = useState(false);
+  const [topLevelOnly, setTopLevelOnly] = useState(false);
+  const [theme, setTheme] = useState<"dark" | "light">(
+    () => (localStorage.getItem("theme") === "light" ? "light" : "dark")
+  );
+  useEffect(() => {
+    document.documentElement.classList.toggle("light", theme === "light");
+    try { localStorage.setItem("theme", theme); } catch { /* ignore */ }
+  }, [theme]);
   // Empty = the implicit default (CPU descending), which is always the lowest-
   // priority tiebreaker. Explicit sorts layer ON TOP of it, so clicking any
   // column visibly reorders while CPU-desc still breaks ties.
@@ -288,11 +297,25 @@ export default function App() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
+          <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, whiteSpace: "nowrap" }}
+            title="커널 스레드([대괄호] 프로세스) 숨기기">
+            <input type="checkbox" checked={hideKthreads}
+              onChange={(e) => setHideKthreads(e.target.checked)} />
+            커널 스레드 숨김
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, whiteSpace: "nowrap" }}
+            title="최상위 프로세스만 (부모 PID ≤ 1, 즉 systemd/커널 직속만)">
+            <input type="checkbox" checked={topLevelOnly}
+              onChange={(e) => setTopLevelOnly(e.target.checked)} />
+            최상위만
+          </label>
         </div>
         {pf ? (
           <ProcTable
             frame={pf}
             search={search}
+            hideKthreads={hideKthreads}
+            topLevelOnly={topLevelOnly}
             sort={sort}
             selectedPid={selectedPid}
             onSort={onSort}
@@ -367,6 +390,11 @@ export default function App() {
           )}
         </div>
         <div className="sidebar-footer">
+          <button className="toolbtn" style={{ width: "100%", marginBottom: 6 }}
+            onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+            title="다크/라이트 테마 전환">
+            {theme === "dark" ? "☀️ 라이트 모드" : "🌙 다크 모드"}
+          </button>
           <button className="toolbtn" style={{ width: "100%" }} onClick={openLog}>
             📂 로그 열기 (재생)
           </button>
@@ -397,6 +425,18 @@ export default function App() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
+              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, whiteSpace: "nowrap" }}
+                title="커널 스레드([대괄호] 프로세스) 숨기기">
+                <input type="checkbox" checked={hideKthreads}
+                  onChange={(e) => setHideKthreads(e.target.checked)} />
+                커널 스레드 숨김
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, whiteSpace: "nowrap" }}
+                title="최상위 프로세스만 (부모 PID ≤ 1, 즉 systemd/커널 직속만)">
+                <input type="checkbox" checked={topLevelOnly}
+                  onChange={(e) => setTopLevelOnly(e.target.checked)} />
+                최상위만
+              </label>
               <label className="refresh-sel" title="화면 갱신 주기 (1~60초)">
                 갱신
                 <select value={refreshSec} onChange={(e) => changeInterval(Number(e.target.value))}>
@@ -479,6 +519,8 @@ export default function App() {
           <ProcTable
             frame={frame}
             search={search}
+            hideKthreads={hideKthreads}
+            topLevelOnly={topLevelOnly}
             sort={sort}
             selectedPid={selectedPid}
             onSort={onSort}
