@@ -233,14 +233,20 @@ func (a *App) StopRecording() string {
 
 // ---- Scheduled recording (server-side, detached) ----
 
-func (a *App) StartScheduled(hostID string, durationSec int) (monitor.RecMeta, error) {
+// EstimateScheduled returns candidate recording filesystems (with free space)
+// and a measured projection of daily disk use for this host.
+func (a *App) EstimateScheduled(hostID string) (monitor.RecEstimate, error) {
+	return a.mgr.EstimateScheduled(hostID)
+}
+
+func (a *App) StartScheduled(hostID string, durationSec, intervalSec int, targetDir string) (monitor.RecMeta, error) {
 	name := hostID
 	if a.hosts != nil {
 		if h, ok, _ := a.hosts.Get(hostID); ok && h.Name != "" {
 			name = h.Name
 		}
 	}
-	return a.mgr.StartScheduled(hostID, durationSec, name)
+	return a.mgr.StartScheduled(hostID, durationSec, intervalSec, name, targetDir)
 }
 
 func (a *App) ListScheduled(hostID string) ([]monitor.RecMeta, error) {
@@ -266,9 +272,13 @@ func (a *App) DownloadScheduledAndPlay(hostID, id string) (LogMeta, error) {
 	if len(frames) == 0 {
 		return LogMeta{}, fmt.Errorf("기록에 프레임이 없습니다 (아직 데이터가 쌓이지 않았을 수 있음)")
 	}
+	// The sampler's NDJSON carries no hostId (it doesn't know it), so stamp the
+	// host we downloaded from — otherwise frames bucket under "" and the playback
+	// UI can't resolve them (meta.Hosts[0].ID == "" is treated as falsy).
 	byHost := map[string][]monitor.Frame{}
 	for _, f := range frames {
-		byHost[f.HostID] = append(byHost[f.HostID], f)
+		f.HostID = hostID
+		byHost[hostID] = append(byHost[hostID], f)
 	}
 	a.logMu.Lock()
 	a.logFrames = byHost

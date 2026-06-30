@@ -15,6 +15,8 @@ export function Disconnect(arg1:string):Promise<void>;
 
 export function DownloadScheduledAndPlay(arg1:string,arg2:string):Promise<main.LogMeta>;
 
+export function EstimateScheduled(arg1:string):Promise<monitor.RecEstimate>;
+
 export function IsRecording():Promise<boolean>;
 
 export function ListHosts():Promise<Array<host.Host>>;
@@ -37,7 +39,7 @@ export function SetInterval(arg1:string,arg2:number):Promise<void>;
 
 export function StartRecording(arg1:string):Promise<string>;
 
-export function StartScheduled(arg1:string,arg2:number):Promise<monitor.RecMeta>;
+export function StartScheduled(arg1:string,arg2:number,arg3:number,arg4:string):Promise<monitor.RecMeta>;
 
 export function StopRecording():Promise<string>;
 

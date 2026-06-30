@@ -50,6 +50,30 @@ type RecMeta struct {
 	SizeBytes   int64  `json:"sizeBytes"`
 }
 
+// RecTarget is one candidate filesystem a scheduled recording could be written
+// to. The UI lets the user pick one so recordings land on a roomy data/home
+// partition instead of filling "/".
+type RecTarget struct {
+	Path       string `json:"path"`       // base dir we'd record into (.rtaskmgr-rec is appended)
+	Mount      string `json:"mount"`      // filesystem mountpoint containing Path
+	TotalBytes int64  `json:"totalBytes"` // filesystem size
+	FreeBytes  int64  `json:"freeBytes"`  // available space
+	Writable   bool   `json:"writable"`   // login user can write Path directly
+	NeedsSudo  bool   `json:"needsSudo"`  // not writable, but sudo can create a user-owned subdir
+}
+
+// RecEstimate is the pre-flight panel for scheduled recording: where it can be
+// stored (with free space) plus a measured projection of how much disk one day
+// of 1-second sampling will consume on this host.
+type RecEstimate struct {
+	Targets      []RecTarget `json:"targets"`
+	ProbeSec     int         `json:"probeSec"`     // wall seconds the probe sampled
+	ProbeBytes   int64       `json:"probeBytes"`   // gzip bytes the probe produced
+	Frames       int         `json:"frames"`       // frames captured during the probe
+	BytesPerHour int64       `json:"bytesPerHour"` // projected, gzip
+	BytesPerDay  int64       `json:"bytesPerDay"`  // projected, gzip
+}
+
 // samplerName is content-addressed (RemoteName + short hash of the binary), so
 // every app instance / user stages the SAME file. That lets concurrent sessions
 // share one binary instead of overwriting a fixed path — overwriting a running
@@ -123,6 +147,7 @@ type session struct {
 	useSudo      bool               // wrap remote commands in sudo
 	elevated     bool               // root or working sudo (required for nethogs/dnf)
 	password     string
+	user         string             // login user (for sudo chown of recording dirs)
 	rhelMajor    string
 
 	netMu           sync.Mutex
@@ -272,6 +297,7 @@ func (m *Manager) Start(parent context.Context, h host.Host, intervalSec int) (C
 		useSudo:   useSudoWrapper,
 		elevated:  caps.Sudo,
 		password:  h.Password,
+		user:      h.User,
 		rhelMajor: caps.RHELMajor,
 	}
 	m.mu.Lock()
@@ -653,6 +679,10 @@ func (m *Manager) commandExists(s *session, name string) bool {
 
 // ---- scheduled (server-side, detached) recording ----
 
+// probeSeconds is how long EstimateScheduled samples to project daily disk use.
+// 6s yields ~5 one-second frames — enough to project from while staying quick.
+const probeSeconds = 6
+
 func recDirFor(s *session) string {
 	d := s.stageDir
 	if d == "" {
@@ -661,10 +691,134 @@ func recDirFor(s *session) string {
 	return d + "/.rtaskmgr-rec"
 }
 
+// recBasesSh is the shell-expanded list of base dirs a scheduled recording may
+// live under: the staging dir / login home (default) plus the roomy /data and
+// /home partitions the UI can target. Paths are app-derived (no spaces).
+func recBasesSh(s *session) string {
+	stage := s.stageDir
+	if stage == "" {
+		stage = "/var/tmp"
+	}
+	return stage + ` "$HOME" /data /home`
+}
+
+// resolveRecFile locates a recording's on-host gz path across the candidate
+// bases (recordings may live on different partitions now). id is app-generated
+// (rec-<millis>), so it is safe to interpolate.
+func (m *Manager) resolveRecFile(s *session, id string) (string, error) {
+	script := `for b in ` + recBasesSh(s) + `; do f="$b/.rtaskmgr-rec/` + id + `.ndjson.gz"; [ -e "$f" ] && { echo "$f"; exit 0; }; done`
+	out, _ := m.plainRun(s, script)
+	f := strings.TrimSpace(out)
+	if f == "" {
+		return "", fmt.Errorf("기록 파일을 찾지 못했습니다: %s", id)
+	}
+	return f, nil
+}
+
+// recTargets probes the candidate filesystems for scheduled recordings,
+// reporting free space and whether the login user can write there directly (or
+// via sudo). Mountpoints are de-duplicated, preferring a directly-writable path.
+func (m *Manager) recTargets(s *session) []RecTarget {
+	script := `for d in ` + recBasesSh(s) + `; do [ -d "$d" ] || continue; ` +
+		`w=0; [ -w "$d" ] && w=1; ` +
+		`df -P -B1 "$d" 2>/dev/null | awk -v p="$d" -v w="$w" 'NR==2{print "T|"p"|"$6"|"$2"|"$4"|"w}'; done`
+	out, _ := m.plainRun(s, script)
+	seen := map[string]int{} // mountpoint -> index in ts
+	var ts []RecTarget
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "T|") {
+			continue
+		}
+		p := strings.Split(line[2:], "|")
+		if len(p) != 5 {
+			continue
+		}
+		mount, w := p[1], p[4] == "1"
+		if i, ok := seen[mount]; ok {
+			// Same filesystem reached via another base — keep a writable path.
+			if w && !ts[i].Writable {
+				ts[i].Path = p[0]
+				ts[i].Writable = true
+				ts[i].NeedsSudo = false
+			}
+			continue
+		}
+		total, _ := strconv.ParseInt(p[2], 10, 64)
+		avail, _ := strconv.ParseInt(p[3], 10, 64)
+		seen[mount] = len(ts)
+		ts = append(ts, RecTarget{
+			Path: p[0], Mount: mount, TotalBytes: total, FreeBytes: avail,
+			Writable: w, NeedsSudo: !w && s.elevated,
+		})
+	}
+	return ts
+}
+
+// EstimateScheduled reports where scheduled recordings can be stored (with free
+// space) and projects daily disk use by running a short gzip probe with the real
+// sampler — so the user can size a recording against the chosen partition.
+func (m *Manager) EstimateScheduled(hostID string) (RecEstimate, error) {
+	s := m.get(hostID)
+	if s == nil {
+		return RecEstimate{}, fmt.Errorf("호스트가 연결되어 있지 않습니다")
+	}
+	if s.stageDir == "" {
+		return RecEstimate{}, fmt.Errorf("기록을 저장할 디렉터리를 찾지 못했습니다")
+	}
+	if !samplerPresent(s.client, s.bin, len(agent.SamplerBinary)) {
+		if err := uploadSampler(s.client, s.bin); err != nil {
+			return RecEstimate{}, fmt.Errorf("샘플러 업로드 실패: %w", err)
+		}
+	}
+	est := RecEstimate{ProbeSec: probeSeconds}
+	est.Targets = m.recTargets(s)
+
+	// Short gzip probe (same sampler/flags as a real recording) to measure size.
+	probe := s.stageDir + "/.rtaskmgr-probe.gz"
+	run := fmt.Sprintf("%s -i 1 -max %d -o %s -minfree 64 >/dev/null 2>&1; stat -c%%s %s 2>/dev/null || echo 0",
+		s.bin, probeSeconds, probe, probe)
+	out, err := m.plainRun(s, run)
+	if err != nil {
+		return est, fmt.Errorf("probe 실행 실패: %s", strings.TrimSpace(out))
+	}
+	if f := strings.Fields(strings.TrimSpace(out)); len(f) > 0 {
+		est.ProbeBytes, _ = strconv.ParseInt(f[len(f)-1], 10, 64)
+	}
+
+	// Count frames by decompressing the probe — gives a cadence-accurate per-frame
+	// size to project from (recording is one frame per second).
+	if b64, derr := m.plainRun(s, "base64 -w0 "+probe); derr == nil {
+		if gzBytes, e := base64.StdEncoding.DecodeString(strings.TrimSpace(b64)); e == nil {
+			if gzr, e2 := gzip.NewReader(bytes.NewReader(gzBytes)); e2 == nil {
+				sc := bufio.NewScanner(gzr)
+				sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+				for sc.Scan() {
+					if b := sc.Bytes(); len(b) > 0 && b[0] == '{' {
+						est.Frames++
+					}
+				}
+				gzr.Close()
+			}
+		}
+	}
+	_, _ = m.plainRun(s, "rm -f "+probe+" "+probe+".done")
+
+	if est.Frames > 0 && est.ProbeBytes > 0 {
+		perFrame := float64(est.ProbeBytes) / float64(est.Frames)
+		est.BytesPerHour = int64(perFrame * 3600)
+		est.BytesPerDay = int64(perFrame * 86400)
+	}
+	return est, nil
+}
+
 // StartScheduled launches a detached server-side recording that survives the
 // client disconnecting and self-stops after durationSec (hard-capped at 7 days).
-// The sampler writes gzip NDJSON and aborts early if the disk runs low.
-func (m *Manager) StartScheduled(hostID string, durationSec int, hostName string) (RecMeta, error) {
+// The sampler writes gzip NDJSON and aborts early if the disk runs low. targetDir
+// chooses the filesystem to record onto (empty = default staging dir); if it is
+// not directly writable, a user-owned subdir is created with sudo. intervalSec is
+// the recording cadence (1..60s) — a coarser interval trades resolution for less
+// disk use.
+func (m *Manager) StartScheduled(hostID string, durationSec, intervalSec int, hostName, targetDir string) (RecMeta, error) {
 	s := m.get(hostID)
 	if s == nil {
 		return RecMeta{}, fmt.Errorf("호스트가 연결되어 있지 않습니다")
@@ -675,6 +829,12 @@ func (m *Manager) StartScheduled(hostID string, durationSec int, hostName string
 	if durationSec > MaxScheduledSeconds {
 		durationSec = MaxScheduledSeconds
 	}
+	if intervalSec < 1 {
+		intervalSec = 1
+	}
+	if intervalSec > 60 {
+		intervalSec = 60
+	}
 	if s.stageDir == "" {
 		return RecMeta{}, fmt.Errorf("기록을 저장할 디렉터리를 찾지 못했습니다")
 	}
@@ -684,7 +844,11 @@ func (m *Manager) StartScheduled(hostID string, durationSec int, hostName string
 		}
 	}
 
-	recDir := recDirFor(s)
+	base := targetDir
+	if base == "" {
+		base = s.stageDir
+	}
+	recDir := base + "/.rtaskmgr-rec"
 	now := time.Now()
 	id := fmt.Sprintf("rec-%d", now.UnixMilli())
 	file := recDir + "/" + id + ".ndjson.gz"
@@ -692,12 +856,24 @@ func (m *Manager) StartScheduled(hostID string, durationSec int, hostName string
 		ID: id, HostID: hostID, HostName: hostName, File: file,
 		StartT:      now.UnixMilli(),
 		PlannedEndT: now.Add(time.Duration(durationSec) * time.Second).UnixMilli(),
-		DurationSec: durationSec, IntervalSec: 1, Status: "running",
+		DurationSec: durationSec, IntervalSec: intervalSec, Status: "running",
 	}
 	metaJSON, _ := json.Marshal(meta)
 
-	if _, err := m.plainRun(s, "mkdir -p "+recDir); err != nil {
-		return meta, err
+	// Ensure the recording dir exists and the login user (which runs the detached
+	// sampler) can write it. If not, fall back to sudo: create + chown to the user.
+	mk := "mkdir -p " + recDir + " 2>/dev/null && test -w " + recDir + " && echo OK"
+	if out, _ := m.plainRun(s, mk); !strings.Contains(out, "OK") {
+		if !s.elevated {
+			return meta, fmt.Errorf("기록 위치에 쓸 수 없습니다(권한 없음): %s", base)
+		}
+		if s.user == "" {
+			return meta, fmt.Errorf("기록 위치를 생성할 사용자명을 알 수 없습니다")
+		}
+		sudoMk := fmt.Sprintf("mkdir -p %s && chown %s %s && echo OK", recDir, s.user, recDir)
+		if out2, err := m.sudoRun(s, sudoMk); err != nil || !strings.Contains(out2, "OK") {
+			return meta, fmt.Errorf("sudo로 기록 위치 생성 실패: %s", strings.TrimSpace(out2))
+		}
 	}
 	if err := uploadBytes(s.client, metaJSON, recDir+"/"+id+".meta.json", false); err != nil {
 		return meta, err
@@ -705,8 +881,8 @@ func (m *Manager) StartScheduled(hostID string, durationSec int, hostName string
 	// setsid detaches from the SSH session's process group so it keeps running
 	// after we disconnect. Paths are app-controlled (no spaces) so no quoting.
 	launch := fmt.Sprintf(
-		"setsid %s -i 1 -max %d -o %s -minfree 512 >/dev/null 2>&1 </dev/null & echo OK",
-		s.bin, durationSec, file)
+		"setsid %s -i %d -max %d -o %s -minfree 512 >/dev/null 2>&1 </dev/null & echo OK",
+		s.bin, intervalSec, durationSec, file)
 	if out, err := m.plainRun(s, launch); err != nil {
 		return meta, fmt.Errorf("실행 실패: %s", strings.TrimSpace(out))
 	}
@@ -720,13 +896,12 @@ func (m *Manager) ListScheduled(hostID string) ([]RecMeta, error) {
 	if s == nil {
 		return nil, fmt.Errorf("호스트가 연결되어 있지 않습니다")
 	}
-	recDir := recDirFor(s)
-	script := `d=` + recDir + `; [ -d "$d" ] || exit 0; ` +
+	script := `for b in ` + recBasesSh(s) + `; do d="$b/.rtaskmgr-rec"; [ -d "$d" ] || continue; ` +
 		`for mf in "$d"/*.meta.json; do [ -e "$mf" ] || continue; ` +
 		`id=$(basename "$mf" .meta.json); f="$d/$id.ndjson.gz"; ` +
 		`sz=$(stat -c%s "$f" 2>/dev/null || echo 0); ` +
 		`run=0; pgrep -f "$f" >/dev/null 2>&1 && run=1; ` +
-		`echo "STAT|$id|$sz|$run"; echo "META|$(base64 -w0 "$mf")"; done`
+		`echo "STAT|$id|$sz|$run"; echo "META|$(base64 -w0 "$mf")"; done; done`
 	out, err := m.plainRun(s, script)
 	if err != nil {
 		return nil, err
@@ -781,8 +956,11 @@ func (m *Manager) StopScheduled(hostID, id string) error {
 	if s == nil {
 		return fmt.Errorf("호스트가 연결되어 있지 않습니다")
 	}
-	file := recDirFor(s) + "/" + id + ".ndjson.gz"
-	_, err := m.plainRun(s,
+	file, err := m.resolveRecFile(s, id)
+	if err != nil {
+		return err
+	}
+	_, err = m.plainRun(s,
 		"pkill -TERM -f "+file+" 2>/dev/null; sleep 1; "+
 			"pgrep -f "+file+" >/dev/null 2>&1 && pkill -KILL -f "+file+"; echo done")
 	return err
@@ -794,8 +972,13 @@ func (m *Manager) DeleteScheduled(hostID, id string) error {
 	if s == nil {
 		return fmt.Errorf("호스트가 연결되어 있지 않습니다")
 	}
-	d := recDirFor(s)
-	_, err := m.plainRun(s, fmt.Sprintf("rm -f %s/%s.ndjson.gz %s/%s.ndjson.gz.done %s/%s.meta.json; echo done",
+	file, err := m.resolveRecFile(s, id)
+	if err != nil {
+		return err
+	}
+	// file is "<dir>/<id>.ndjson.gz"; remove it and its .done/.meta.json sidecars.
+	d := strings.TrimSuffix(file, "/"+id+".ndjson.gz")
+	_, err = m.plainRun(s, fmt.Sprintf("rm -f %s/%s.ndjson.gz %s/%s.ndjson.gz.done %s/%s.meta.json; echo done",
 		d, id, d, id, d, id))
 	return err
 }
@@ -807,7 +990,10 @@ func (m *Manager) DownloadScheduled(hostID, id string) ([]Frame, error) {
 	if s == nil {
 		return nil, fmt.Errorf("호스트가 연결되어 있지 않습니다")
 	}
-	file := recDirFor(s) + "/" + id + ".ndjson.gz"
+	file, err := m.resolveRecFile(s, id)
+	if err != nil {
+		return nil, err
+	}
 	out, err := m.plainRun(s, "base64 -w0 "+file)
 	if err != nil {
 		return nil, fmt.Errorf("다운로드 실패: %s", tailLines(out, 2))

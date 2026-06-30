@@ -22,6 +22,10 @@ export function DownloadScheduledAndPlay(arg1, arg2) {
   return window['go']['main']['App']['DownloadScheduledAndPlay'](arg1, arg2);
 }
 
+export function EstimateScheduled(arg1) {
+  return window['go']['main']['App']['EstimateScheduled'](arg1);
+}
+
 export function IsRecording() {
   return window['go']['main']['App']['IsRecording']();
 }
@@ -66,8 +70,8 @@ export function StartRecording(arg1) {
   return window['go']['main']['App']['StartRecording'](arg1);
 }
 
-export function StartScheduled(arg1, arg2) {
-  return window['go']['main']['App']['StartScheduled'](arg1, arg2);
+export function StartScheduled(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['StartScheduled'](arg1, arg2, arg3, arg4);
 }
 
 export function StopRecording() {
