@@ -52,9 +52,14 @@ export default function DetailModal({ hostId, pid, current, frames, onClose }: P
     };
   }, [hostId, pid, frames]);
 
+  const times = hist.map((p) => p.t);
   const cpu = hist.map((p) => p.cpu);
   const mem = hist.map((p) => p.memPct);
   const disk = hist.map((p) => Math.max(0, p.diskR < 0 ? 0 : p.diskR + p.diskW));
+  // Tooltip labels mirror each chart's corner units (CPU %, memory MB, disk B/s).
+  const cpuLabels = hist.map((p) => pct(p.cpu));
+  const memLabels = hist.map((p) => mib(p.rssKiB));
+  const diskLabels = hist.map((p) => bytesRate(p.diskR < 0 ? -1 : p.diskR + p.diskW));
   const last = hist[hist.length - 1];
 
   return (
@@ -78,14 +83,14 @@ export default function DetailModal({ hostId, pid, current, frames, onClose }: P
               <span>CPU</span>
               <span className="cnow">{last ? pct(last.cpu) : "—"}</span>
             </div>
-            <Sparkline values={cpu} color="#4cc2ff" />
+            <Sparkline values={cpu} times={times} labels={cpuLabels} color="#4cc2ff" />
           </div>
           <div className="chart">
             <div className="ctitle">
               <span>메모리</span>
               <span className="cnow">{last ? mib(last.rssKiB) : "—"}</span>
             </div>
-            <Sparkline values={mem} color="#7c4dff" />
+            <Sparkline values={mem} times={times} labels={memLabels} color="#7c4dff" />
           </div>
           <div className="chart">
             <div className="ctitle">
@@ -94,7 +99,7 @@ export default function DetailModal({ hostId, pid, current, frames, onClose }: P
                 {last ? bytesRate(last.diskR < 0 ? -1 : last.diskR + last.diskW) : "—"}
               </span>
             </div>
-            <Sparkline values={disk} color="#6ccb5f" />
+            <Sparkline values={disk} times={times} labels={diskLabels} color="#6ccb5f" />
           </div>
           <div className="chart">
             <div className="ctitle">

@@ -37,6 +37,16 @@ export function diskBps(diskR: number, diskW: number): number {
   return diskR + diskW;
 }
 
+// fmtClock renders a unix-millis timestamp as "YYYY-MM-DD HH:MM:SS" (local time).
+export function fmtClock(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  );
+}
+
 // heat returns a 0..1 intensity for the cell background bar.
 export function heat(v: number, max: number): number {
   if (v <= 0 || max <= 0) return 0;
