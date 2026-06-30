@@ -144,20 +144,28 @@ func main() {
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGTERM, syscall.SIGINT)
 
-	// Prime deltas: take a baseline, sleep, then emit on every subsequent tick.
+	// Prime deltas: take a baseline now, then emit the FIRST frame after a brief
+	// warm-up (≤1s) so the UI shows current values immediately on connect —
+	// instead of waiting a full interval (which looks like "not connecting" when
+	// the interval is 20s/1m). Subsequent frames follow the configured interval.
 	prevTotal = readTotalJiffies()
 	primeProcs(prev)
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	prevT := time.Now()
+	warmup := time.Second
+	if interval < warmup {
+		warmup = interval
+	}
+	timer := time.NewTimer(warmup)
+	defer timer.Stop()
 	for {
 		var now time.Time
 		select {
 		case <-sigc:
 			stop("signal")
 			return
-		case now = <-ticker.C:
+		case now = <-timer.C:
 		}
+		timer.Reset(interval) // next frame at the full interval
 		// Safety: hard time cap (scheduled recordings) and disk free-space guard.
 		if !deadline.IsZero() && now.After(deadline) {
 			stop("deadline")
@@ -175,7 +183,14 @@ func main() {
 		if totalDelta <= 0 {
 			totalDelta = 1
 		}
-		secs := interval.Seconds()
+		// Use the ACTUAL elapsed time as the rate denominator so the short first
+		// frame (and any timer jitter) yields accurate bytes/s. CPU% is derived
+		// from the jiffie delta ratio, so it is window-length independent.
+		secs := now.Sub(prevT).Seconds()
+		if secs <= 0 {
+			secs = interval.Seconds()
+		}
+		prevT = now
 
 		memTotal, memAvail := readMem()
 		f := frame{
