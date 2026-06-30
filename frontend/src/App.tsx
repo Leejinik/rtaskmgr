@@ -9,8 +9,9 @@ import {
 
 const REFRESH_OPTS = [1, 2, 3, 5, 10, 15, 20, 30, 60];
 import { host, main } from "../wailsjs/go/models";
-import { Frame, HostStatus, Capabilities, SortKey, SortSpec, MAX_SORT } from "./types";
+import { Frame, HostStatus, Capabilities, SortKey, SortSpec, MAX_SORT, SysSample } from "./types";
 import ProcTable from "./components/ProcTable";
+import PerformanceView from "./components/PerformanceView";
 import DetailModal from "./components/DetailModal";
 import ConnectDialog from "./components/ConnectDialog";
 import ContextMenu from "./components/ContextMenu";
@@ -40,6 +41,8 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [hideKthreads, setHideKthreads] = useState(false);
   const [topLevelOnly, setTopLevelOnly] = useState(false);
+  const [view, setView] = useState<"proc" | "perf">("proc");
+  const [sysHist, setSysHist] = useState<Record<string, SysSample[]>>({});
   const [theme, setTheme] = useState<"dark" | "light">(
     () => (localStorage.getItem("theme") === "light" ? "light" : "dark")
   );
@@ -85,6 +88,18 @@ export default function App() {
   useEffect(() => {
     const offFrame = EventsOn("frame", (f: Frame) => {
       setFrames((prev) => ({ ...prev, [f.hostId]: f }));
+      // Accumulate a rolling system-metrics history (no per-process rows) for the
+      // performance charts. ~120 samples (2 min at 1s).
+      setSysHist((prev) => {
+        const arr = (prev[f.hostId] ?? []).slice(-119);
+        arr.push({
+          t: f.t, cpu: f.cpu, mem: f.mem, memTotal: f.memTotal, memUsed: f.memUsed,
+          swapTotal: f.swapTotal, swapUsed: f.swapUsed,
+          netRx: f.netRx, netTx: f.netTx, netSpeed: f.netSpeed,
+          nets: f.nets, disks: f.disks,
+        });
+        return { ...prev, [f.hostId]: arr };
+      });
     });
     const offStatus = EventsOn("status", (s: any) => {
       setStatus((prev) => ({ ...prev, [s.hostId]: { state: s.state, detail: s.detail } }));
@@ -192,6 +207,7 @@ export default function App() {
   function handleDisconnect(id: string) {
     Disconnect(id);
     setFrames((prev) => { const n = { ...prev }; delete n[id]; return n; });
+    setSysHist((prev) => { const n = { ...prev }; delete n[id]; return n; });
     setNethogs((prev) => { const n = { ...prev }; delete n[id]; return n; });
   }
 
@@ -419,24 +435,36 @@ export default function App() {
                   연결
                 </button>
               )}
-              <input
-                className="search"
-                placeholder="이름, 서비스 또는 PID로 검색"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, whiteSpace: "nowrap" }}
-                title="커널 스레드([대괄호] 프로세스) 숨기기">
-                <input type="checkbox" checked={hideKthreads}
-                  onChange={(e) => setHideKthreads(e.target.checked)} />
-                커널 스레드 숨김
-              </label>
-              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, whiteSpace: "nowrap" }}
-                title="최상위 프로세스만 (부모 PID ≤ 1, 즉 systemd/커널 직속만)">
-                <input type="checkbox" checked={topLevelOnly}
-                  onChange={(e) => setTopLevelOnly(e.target.checked)} />
-                최상위만
-              </label>
+              {connected && (
+                <div className="viewtabs">
+                  <button className={"toolbtn" + (view === "proc" ? " primary" : "")}
+                    onClick={() => setView("proc")}>프로세스</button>
+                  <button className={"toolbtn" + (view === "perf" ? " primary" : "")}
+                    onClick={() => setView("perf")}>성능</button>
+                </div>
+              )}
+              {view === "proc" && (
+                <>
+                  <input
+                    className="search"
+                    placeholder="이름, 서비스 또는 PID로 검색"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                  <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, whiteSpace: "nowrap" }}
+                    title="커널 스레드([대괄호] 프로세스) 숨기기">
+                    <input type="checkbox" checked={hideKthreads}
+                      onChange={(e) => setHideKthreads(e.target.checked)} />
+                    커널 스레드 숨김
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, whiteSpace: "nowrap" }}
+                    title="최상위 프로세스만 (부모 PID ≤ 1, 즉 systemd/커널 직속만)">
+                    <input type="checkbox" checked={topLevelOnly}
+                      onChange={(e) => setTopLevelOnly(e.target.checked)} />
+                    최상위만
+                  </label>
+                </>
+              )}
               <label className="refresh-sel" title="화면 갱신 주기 (1~60초)">
                 갱신
                 <select value={refreshSec} onChange={(e) => changeInterval(Number(e.target.value))}>
@@ -515,7 +543,7 @@ export default function App() {
           </div>
         )}
 
-        {selected && frame && (
+        {selected && frame && view === "proc" && (
           <ProcTable
             frame={frame}
             search={search}
@@ -527,6 +555,9 @@ export default function App() {
             onSelect={setSelectedPid}
             onOpen={(pid) => setDetailPid(pid)}
           />
+        )}
+        {selected && frame && view === "perf" && (
+          <PerformanceView frame={frame} samples={sysHist[selected.id] ?? []} />
         )}
 
         <div className="statusline">

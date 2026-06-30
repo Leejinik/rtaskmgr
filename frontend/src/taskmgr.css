@@ -614,3 +614,79 @@ table.proc tbody tr.sel td {
 .rec.armed {
   color: var(--good);
 }
+
+/* ---- view tabs (프로세스 / 성능) ---- */
+.viewtabs {
+  display: flex;
+  gap: 2px;
+}
+
+/* ---- performance view ---- */
+.perf {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.perf-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.perf-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.perf-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+.perf-now {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.perf-sub {
+  color: var(--text-mute);
+  font-size: 11px;
+}
+.perf-disk {
+  border-top: 1px solid var(--border);
+  margin-top: 10px;
+  padding-top: 8px;
+}
+.perf-disk:first-of-type {
+  border-top: none;
+  margin-top: 6px;
+  padding-top: 0;
+}
+.usagebar {
+  position: relative;
+  height: 18px;
+  border-radius: 3px;
+  background: var(--bg-row-hover);
+  overflow: hidden;
+  margin: 4px 0;
+}
+.usagefill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  opacity: 0.55;
+}
+.usagetext {
+  position: absolute;
+  left: 8px;
+  top: 0;
+  line-height: 18px;
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+}

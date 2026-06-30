@@ -17,6 +17,26 @@ export interface Proc {
   threads: number;
 }
 
+export interface NetStat {
+  name: string;
+  rxBps: number;
+  txBps: number;
+  speed: number; // Mbit/s, 0 = unknown
+}
+
+export interface DiskStat {
+  mount: string;
+  dev: string;
+  fsType: string;
+  total: number; // bytes
+  free: number;
+  used: number;
+  rBps: number; // bytes/s
+  wBps: number;
+  busy: number; // % of interval doing I/O
+  kind: string; // "SSD" / "HDD" / ""
+}
+
 export interface Frame {
   hostId: string;
   t: number; // unix millis
@@ -25,7 +45,31 @@ export interface Frame {
   memUsed: number; // KiB
   cpu: number; // overall busy %
   mem: number; // overall mem %
+  swapTotal: number; // KiB
+  swapUsed: number; // KiB
+  netRx: number; // bytes/s
+  netTx: number; // bytes/s
+  netSpeed: number; // Mbit/s, 0 = unknown
+  nets: NetStat[];
+  disks: DiskStat[];
   procs: Proc[];
+}
+
+// SysSample is one timestamped system-level snapshot (no per-process rows) kept
+// in a rolling client-side history for the performance charts.
+export interface SysSample {
+  t: number;
+  cpu: number;
+  mem: number;
+  memTotal: number;
+  memUsed: number;
+  swapTotal: number;
+  swapUsed: number;
+  netRx: number;
+  netTx: number;
+  netSpeed: number;
+  nets: NetStat[];
+  disks: DiskStat[];
 }
 
 export interface Capabilities {

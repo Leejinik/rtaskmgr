@@ -134,6 +134,36 @@ export namespace monitor {
 	        this.stageDir = source["stageDir"];
 	    }
 	}
+	export class DiskStat {
+	    mount: string;
+	    dev: string;
+	    fsType: string;
+	    total: number;
+	    free: number;
+	    used: number;
+	    rBps: number;
+	    wBps: number;
+	    busy: number;
+	    kind: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiskStat(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mount = source["mount"];
+	        this.dev = source["dev"];
+	        this.fsType = source["fsType"];
+	        this.total = source["total"];
+	        this.free = source["free"];
+	        this.used = source["used"];
+	        this.rBps = source["rBps"];
+	        this.wBps = source["wBps"];
+	        this.busy = source["busy"];
+	        this.kind = source["kind"];
+	    }
+	}
 	export class Proc {
 	    pid: number;
 	    ppid: number;
@@ -170,6 +200,24 @@ export namespace monitor {
 	        this.threads = source["threads"];
 	    }
 	}
+	export class NetStat {
+	    name: string;
+	    rxBps: number;
+	    txBps: number;
+	    speed: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new NetStat(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.rxBps = source["rxBps"];
+	        this.txBps = source["txBps"];
+	        this.speed = source["speed"];
+	    }
+	}
 	export class Frame {
 	    hostId: string;
 	    t: number;
@@ -178,6 +226,13 @@ export namespace monitor {
 	    memUsed: number;
 	    cpu: number;
 	    mem: number;
+	    swapTotal: number;
+	    swapUsed: number;
+	    netRx: number;
+	    netTx: number;
+	    netSpeed: number;
+	    nets: NetStat[];
+	    disks: DiskStat[];
 	    procs: Proc[];
 	
 	    static createFrom(source: any = {}) {
@@ -193,6 +248,13 @@ export namespace monitor {
 	        this.memUsed = source["memUsed"];
 	        this.cpu = source["cpu"];
 	        this.mem = source["mem"];
+	        this.swapTotal = source["swapTotal"];
+	        this.swapUsed = source["swapUsed"];
+	        this.netRx = source["netRx"];
+	        this.netTx = source["netTx"];
+	        this.netSpeed = source["netSpeed"];
+	        this.nets = this.convertValues(source["nets"], NetStat);
+	        this.disks = this.convertValues(source["disks"], DiskStat);
 	        this.procs = this.convertValues(source["procs"], Proc);
 	    }
 	
@@ -214,6 +276,7 @@ export namespace monitor {
 		    return a;
 		}
 	}
+	
 	
 	export class RecTarget {
 	    path: string;

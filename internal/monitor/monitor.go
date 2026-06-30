@@ -106,14 +106,43 @@ type Proc struct {
 // Frame mirrors one whole-machine snapshot emitted by cmd/sampler, plus the
 // HostID the Manager stamps on it before forwarding.
 type Frame struct {
-	HostID   string  `json:"hostId"`
-	T        int64   `json:"t"`
-	NCPU     int     `json:"ncpu"`
-	MemTotal int64   `json:"memTotal"`
-	MemUsed  int64   `json:"memUsed"`
-	CPU      float64 `json:"cpu"`
-	Mem      float64 `json:"mem"`
-	Procs    []Proc  `json:"procs"`
+	HostID    string     `json:"hostId"`
+	T         int64      `json:"t"`
+	NCPU      int        `json:"ncpu"`
+	MemTotal  int64      `json:"memTotal"`
+	MemUsed   int64      `json:"memUsed"`
+	CPU       float64    `json:"cpu"`
+	Mem       float64    `json:"mem"`
+	SwapTotal int64      `json:"swapTotal"`
+	SwapUsed  int64      `json:"swapUsed"`
+	NetRx     int64      `json:"netRx"`
+	NetTx     int64      `json:"netTx"`
+	NetSpeed  int64      `json:"netSpeed"`
+	Nets      []NetStat  `json:"nets"`
+	Disks     []DiskStat `json:"disks"`
+	Procs     []Proc     `json:"procs"`
+}
+
+// NetStat mirrors one network interface's throughput from the sampler.
+type NetStat struct {
+	Name  string `json:"name"`
+	RxBps int64  `json:"rxBps"`
+	TxBps int64  `json:"txBps"`
+	Speed int64  `json:"speed"`
+}
+
+// DiskStat mirrors one mounted filesystem from the sampler (usage + I/O).
+type DiskStat struct {
+	Mount  string  `json:"mount"`
+	Dev    string  `json:"dev"`
+	FSType string  `json:"fsType"`
+	Total  int64   `json:"total"`
+	Free   int64   `json:"free"`
+	Used   int64   `json:"used"`
+	RBps   int64   `json:"rBps"`
+	WBps   int64   `json:"wBps"`
+	Busy   float64 `json:"busy"`
+	Kind   string  `json:"kind"`
 }
 
 // Capabilities is what the probe discovered about a freshly connected host.

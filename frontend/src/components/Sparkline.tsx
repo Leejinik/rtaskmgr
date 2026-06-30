@@ -55,10 +55,12 @@ export default function Sparkline({
 
   const hx = hover != null ? pts[hover][0] : 0;
   const leftPct = (hx / width) * 100;
+  const topPct = hover != null ? (pts[hover][1] / height) * 100 : 0;
 
   return (
     <div style={{ position: "relative", width: "100%", lineHeight: 0 }}>
       <svg
+        viewBox={`0 0 ${width} ${height}`}
         width={width}
         height={height}
         preserveAspectRatio="none"
@@ -73,14 +75,31 @@ export default function Sparkline({
           </linearGradient>
         </defs>
         <path d={area} fill={`url(#g-${color})`} />
-        <path d={line} fill="none" stroke={color} strokeWidth="1.5" />
+        <path d={line} fill="none" stroke={color} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
         {hover != null && (
-          <>
-            <line x1={hx} y1={0} x2={hx} y2={height} stroke="var(--text-mute)" strokeWidth="1" strokeDasharray="3 3" />
-            <circle cx={hx} cy={pts[hover][1]} r="2.5" fill={color} />
-          </>
+          <line
+            x1={hx} y1={0} x2={hx} y2={height}
+            stroke="var(--text-mute)" strokeWidth="1" strokeDasharray="3 3"
+            vectorEffect="non-scaling-stroke"
+          />
         )}
       </svg>
+      {hover != null && (
+        <div
+          style={{
+            position: "absolute",
+            left: `${leftPct}%`,
+            top: `${topPct}%`,
+            width: 7,
+            height: 7,
+            borderRadius: "50%",
+            background: color,
+            transform: "translate(-50%,-50%)",
+            pointerEvents: "none",
+            zIndex: 4,
+          }}
+        />
+      )}
       {hover != null && (
         <div
           style={{

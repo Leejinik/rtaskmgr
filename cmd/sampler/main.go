@@ -31,13 +31,42 @@ import (
 
 // frame is one second-aligned snapshot of the whole machine.
 type frame struct {
-	T        int64   `json:"t"`        // unix millis
-	NCPU     int     `json:"ncpu"`     // logical CPU count
-	MemTotal int64   `json:"memTotal"` // KiB
-	MemUsed  int64   `json:"memUsed"`  // KiB (total - available)
-	CPU      float64 `json:"cpu"`      // overall busy %, 100 = all cores
-	Mem      float64 `json:"mem"`      // overall memory %
-	Procs    []proc  `json:"procs"`
+	T         int64      `json:"t"`         // unix millis
+	NCPU      int        `json:"ncpu"`      // logical CPU count
+	MemTotal  int64      `json:"memTotal"`  // KiB
+	MemUsed   int64      `json:"memUsed"`   // KiB (total - available)
+	CPU       float64    `json:"cpu"`       // overall busy %, 100 = all cores
+	Mem       float64    `json:"mem"`       // overall memory %
+	SwapTotal int64      `json:"swapTotal"` // KiB
+	SwapUsed  int64      `json:"swapUsed"`  // KiB (total - free)
+	NetRx     int64      `json:"netRx"`     // bytes/s received (sum of physical NICs)
+	NetTx     int64      `json:"netTx"`     // bytes/s sent
+	NetSpeed  int64      `json:"netSpeed"`  // sum NIC link speed, Mbit/s (0 = unknown)
+	Nets      []netStat  `json:"nets"`      // per-interface throughput
+	Disks     []diskStat `json:"disks"`     // per-mounted-filesystem usage + I/O
+	Procs     []proc     `json:"procs"`
+}
+
+// netStat is one network interface's throughput over the interval.
+type netStat struct {
+	Name  string `json:"name"`
+	RxBps int64  `json:"rxBps"`
+	TxBps int64  `json:"txBps"`
+	Speed int64  `json:"speed"` // link speed Mbit/s (0 = unknown)
+}
+
+// diskStat is one mounted real filesystem: space usage + I/O over the interval.
+type diskStat struct {
+	Mount  string  `json:"mount"`  // mountpoint (e.g. /, /home, /data)
+	Dev    string  `json:"dev"`    // backing device (e.g. /dev/sda1)
+	FSType string  `json:"fsType"` // ext4 / xfs / ...
+	Total  int64   `json:"total"`  // bytes
+	Free   int64   `json:"free"`   // bytes available
+	Used   int64   `json:"used"`   // bytes
+	RBps   int64   `json:"rBps"`   // bytes/s read
+	WBps   int64   `json:"wBps"`   // bytes/s written
+	Busy   float64 `json:"busy"`   // % of interval the device was doing I/O (0..100)
+	Kind   string  `json:"kind"`   // "SSD" / "HDD" / "" (unknown)
 }
 
 // proc is one process row. Rates are over the sampling interval.
@@ -150,6 +179,11 @@ func main() {
 	// the interval is 20s/1m). Subsequent frames follow the configured interval.
 	prevTotal = readTotalJiffies()
 	primeProcs(prev)
+	prevNet := map[string][2]int64{} // iface -> {rx, tx} cumulative
+	for _, ni := range readNetIfaces() {
+		prevNet[ni.name] = [2]int64{ni.rx, ni.tx}
+	}
+	prevDisk := readDiskstats()
 	prevT := time.Now()
 	warmup := time.Second
 	if interval < warmup {
@@ -192,16 +226,57 @@ func main() {
 		}
 		prevT = now
 
-		memTotal, memAvail := readMem()
+		memTotal, memAvail, swapTotal, swapFree := readMem()
 		f := frame{
-			T:        now.UnixMilli(),
-			NCPU:     ncpu,
-			MemTotal: memTotal,
-			MemUsed:  memTotal - memAvail,
+			T:         now.UnixMilli(),
+			NCPU:      ncpu,
+			MemTotal:  memTotal,
+			MemUsed:   memTotal - memAvail,
+			SwapTotal: swapTotal,
+			SwapUsed:  swapTotal - swapFree,
 		}
 		if memTotal > 0 {
 			f.Mem = float64(memTotal-memAvail) / float64(memTotal) * 100
 		}
+
+		// Per-interface + total network throughput (bytes/s) over the window.
+		for _, ni := range readNetIfaces() {
+			p := prevNet[ni.name]
+			rxBps := perSec(ni.rx-p[0], secs)
+			txBps := perSec(ni.tx-p[1], secs)
+			f.Nets = append(f.Nets, netStat{Name: ni.name, RxBps: rxBps, TxBps: txBps, Speed: ni.speedMbit})
+			f.NetRx += rxBps
+			f.NetTx += txBps
+			f.NetSpeed += ni.speedMbit
+			prevNet[ni.name] = [2]int64{ni.rx, ni.tx}
+		}
+
+		// Per-filesystem usage (statfs) + I/O (diskstats delta).
+		curDisk := readDiskstats()
+		for _, mi := range readMounts() {
+			total, free, used := statfsUsage(mi.mount)
+			ds := diskStat{
+				Mount: mi.mount, Dev: mi.dev, FSType: mi.fsType,
+				Total: total, Free: free, Used: used,
+				Kind: diskKind(mi.diskKey),
+			}
+			if cur, ok := curDisk[mi.diskKey]; ok {
+				if prev, ok2 := prevDisk[mi.diskKey]; ok2 {
+					ds.RBps = perSec((cur.readSectors-prev.readSectors)*512, secs)
+					ds.WBps = perSec((cur.writeSectors-prev.writeSectors)*512, secs)
+					busy := float64(cur.ioMs-prev.ioMs) / (secs * 1000) * 100
+					if busy < 0 {
+						busy = 0
+					}
+					if busy > 100 {
+						busy = 100
+					}
+					ds.Busy = round2(busy)
+				}
+			}
+			f.Disks = append(f.Disks, ds)
+		}
+		prevDisk = curDisk
 
 		newPrev := make(map[int]prevProc, len(prev))
 		var cpuSum float64
@@ -438,11 +513,11 @@ func countCPUs() int {
 	return n
 }
 
-// readMem returns MemTotal and MemAvailable in KiB.
-func readMem() (total, avail int64) {
+// readMem returns MemTotal, MemAvailable, SwapTotal, SwapFree — all in KiB.
+func readMem() (total, avail, swapTotal, swapFree int64) {
 	b, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
-		return 0, 0
+		return 0, 0, 0, 0
 	}
 	for _, line := range strings.Split(string(b), "\n") {
 		fields := strings.Fields(line)
@@ -455,9 +530,256 @@ func readMem() (total, avail int64) {
 			total = v
 		case "MemAvailable:":
 			avail = v
+		case "SwapTotal:":
+			swapTotal = v
+		case "SwapFree:":
+			swapFree = v
 		}
 	}
-	return total, avail
+	return total, avail, swapTotal, swapFree
+}
+
+// ---- network totals ----
+
+// virtualIface reports whether an interface name is a virtual/software device we
+// should exclude from system-wide network throughput (keep physical NICs/bonds).
+func virtualIface(name string) bool {
+	if name == "lo" {
+		return true
+	}
+	for _, p := range []string{"veth", "docker", "br-", "virbr", "vnet", "tap", "tun", "cni", "flannel", "cali", "kube", "cni0", "dummy"} {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+type ifaceCum struct {
+	name        string
+	rx, tx      int64 // cumulative bytes
+	speedMbit   int64
+}
+
+// readNetIfaces returns cumulative rx/tx bytes and link speed for each physical
+// interface (virtual/software devices excluded).
+func readNetIfaces() []ifaceCum {
+	b, err := os.ReadFile("/proc/net/dev")
+	if err != nil {
+		return nil
+	}
+	var out []ifaceCum
+	for _, line := range strings.Split(string(b), "\n") {
+		i := strings.IndexByte(line, ':')
+		if i < 0 {
+			continue
+		}
+		name := strings.TrimSpace(line[:i])
+		if virtualIface(name) {
+			continue
+		}
+		// Skip administratively-down NICs (reduces noise from unused ports).
+		if st, e := os.ReadFile("/sys/class/net/" + name + "/operstate"); e == nil {
+			if strings.TrimSpace(string(st)) == "down" {
+				continue
+			}
+		}
+		f := strings.Fields(line[i+1:])
+		if len(f) < 16 {
+			continue
+		}
+		r, _ := strconv.ParseInt(f[0], 10, 64) // rx bytes
+		t, _ := strconv.ParseInt(f[8], 10, 64) // tx bytes
+		ic := ifaceCum{name: name, rx: r, tx: t}
+		if sb, e := os.ReadFile("/sys/class/net/" + name + "/speed"); e == nil {
+			if s, _ := strconv.ParseInt(strings.TrimSpace(string(sb)), 10, 64); s > 0 {
+				ic.speedMbit = s
+			}
+		}
+		out = append(out, ic)
+	}
+	return out
+}
+
+// ---- per-filesystem disk usage + I/O ----
+
+// realFS is the set of on-disk filesystem types we report (pseudo/network fs are
+// skipped — they have no df-meaningful size or /proc/diskstats I/O).
+var realFS = map[string]bool{
+	"ext2": true, "ext3": true, "ext4": true, "xfs": true, "btrfs": true,
+	"f2fs": true, "jfs": true, "reiserfs": true, "vfat": true, "exfat": true,
+	"ntfs": true, "ntfs3": true,
+}
+
+type mountInfo struct {
+	mount  string
+	dev    string // raw device from /proc/mounts
+	diskKey string // /proc/diskstats device name (resolved, e.g. sda1, dm-3)
+	fsType string
+}
+
+// readMounts lists mounted real filesystems, resolving each device to its
+// /proc/diskstats key (handles /dev/mapper symlinks → dm-N).
+func readMounts() []mountInfo {
+	b, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []mountInfo
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 || !strings.HasPrefix(f[0], "/dev/") || !realFS[f[2]] {
+			continue
+		}
+		mp := unescapeMount(f[1])
+		if seen[mp] {
+			continue
+		}
+		seen[mp] = true
+		key := f[0]
+		if resolved, e := filepath.EvalSymlinks(f[0]); e == nil {
+			key = resolved
+		}
+		out = append(out, mountInfo{mount: mp, dev: f[0], diskKey: filepath.Base(key), fsType: f[2]})
+	}
+	return out
+}
+
+// unescapeMount decodes the octal escapes (\040 space etc.) used in /proc/mounts.
+func unescapeMount(s string) string {
+	if !strings.ContainsRune(s, '\\') {
+		return s
+	}
+	var sb strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) {
+			if n, err := strconv.ParseInt(s[i+1:i+4], 8, 16); err == nil {
+				sb.WriteByte(byte(n))
+				i += 3
+				continue
+			}
+		}
+		sb.WriteByte(s[i])
+	}
+	return sb.String()
+}
+
+type diskCounters struct {
+	readSectors  int64
+	writeSectors int64
+	ioMs         int64 // milliseconds spent doing I/O (field 13)
+}
+
+// readDiskstats returns cumulative counters keyed by device name.
+func readDiskstats() map[string]diskCounters {
+	b, err := os.ReadFile("/proc/diskstats")
+	if err != nil {
+		return nil
+	}
+	out := map[string]diskCounters{}
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 14 {
+			continue
+		}
+		name := f[2]
+		rd, _ := strconv.ParseInt(f[5], 10, 64)  // sectors read
+		wr, _ := strconv.ParseInt(f[9], 10, 64)  // sectors written
+		io, _ := strconv.ParseInt(f[12], 10, 64) // ms doing I/O
+		out[name] = diskCounters{readSectors: rd, writeSectors: wr, ioMs: io}
+	}
+	return out
+}
+
+// perSec converts a counter delta over `secs` seconds into a per-second rate,
+// clamping negatives (counter reset / device removed) to 0.
+func perSec(delta int64, secs float64) int64 {
+	if delta <= 0 || secs <= 0 {
+		return 0
+	}
+	return int64(float64(delta) / secs)
+}
+
+// diskKind classifies a block device as "SSD" / "HDD" via the kernel's
+// rotational flag, or "" when it can't be determined.
+func diskKind(diskKey string) string {
+	switch rotationalOf(diskKey) {
+	case 1:
+		return "HDD"
+	case 0:
+		return "SSD"
+	}
+	return ""
+}
+
+// rotationalOf returns 1 (rotational/HDD), 0 (non-rotational/SSD), or -1.
+func rotationalOf(key string) int {
+	// Whole device (sda, nvme0n1, dm-3) — its own rotational flag.
+	if v, ok := readRot("/sys/block/" + key + "/queue/rotational"); ok {
+		// device-mapper rotational can be misleading; prefer an underlying slave.
+		if strings.HasPrefix(key, "dm-") {
+			if slaves, e := os.ReadDir("/sys/block/" + key + "/slaves"); e == nil && len(slaves) > 0 {
+				if p := parentDisk(slaves[0].Name()); p != "" {
+					if sv, ok2 := readRot("/sys/block/" + p + "/queue/rotational"); ok2 {
+						return sv
+					}
+				}
+			}
+		}
+		return v
+	}
+	// Partition (sda1, nvme0n1p1) — the flag lives on the parent disk.
+	if p := parentDisk(key); p != "" {
+		if v, ok := readRot("/sys/block/" + p + "/queue/rotational"); ok {
+			return v
+		}
+	}
+	return -1
+}
+
+func readRot(path string) (int, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	switch strings.TrimSpace(string(b)) {
+	case "1":
+		return 1, true
+	case "0":
+		return 0, true
+	}
+	return 0, false
+}
+
+// parentDisk strips a partition suffix to the whole-disk name (sda1→sda,
+// nvme0n1p1→nvme0n1). Returns "" when the name has no trailing partition number.
+func parentDisk(part string) string {
+	i := len(part)
+	for i > 0 && part[i-1] >= '0' && part[i-1] <= '9' {
+		i--
+	}
+	if i == len(part) {
+		return "" // no trailing digits → not a partition
+	}
+	// nvme0n1p1 / mmcblk0p1: drop the 'p' separator too.
+	if i > 1 && part[i-1] == 'p' && part[i-2] >= '0' && part[i-2] <= '9' {
+		i--
+	}
+	return part[:i]
+}
+
+// statfsUsage returns total/free/used bytes for a mountpoint.
+func statfsUsage(mount string) (total, free, used int64) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(mount, &st); err != nil {
+		return 0, 0, 0
+	}
+	bs := int64(st.Bsize)
+	total = int64(st.Blocks) * bs
+	free = int64(st.Bavail) * bs
+	used = total - int64(st.Bfree)*bs
+	return total, free, used
 }
 
 func primeProcs(prev map[int]prevProc) {
@@ -518,8 +840,25 @@ func round2(f float64) float64 {
 // writeJSON hand-rolls the frame encoding so the agent has zero imports beyond
 // stdlib basics and stays tiny. Order matches the frame/proc structs above.
 func writeJSON(w *bufio.Writer, f frame) {
-	fmt.Fprintf(w, `{"t":%d,"ncpu":%d,"memTotal":%d,"memUsed":%d,"cpu":%s,"mem":%s,"procs":[`,
-		f.T, f.NCPU, f.MemTotal, f.MemUsed, ftoa(f.CPU), ftoa(f.Mem))
+	fmt.Fprintf(w, `{"t":%d,"ncpu":%d,"memTotal":%d,"memUsed":%d,"cpu":%s,"mem":%s,"swapTotal":%d,"swapUsed":%d,"netRx":%d,"netTx":%d,"netSpeed":%d,"nets":[`,
+		f.T, f.NCPU, f.MemTotal, f.MemUsed, ftoa(f.CPU), ftoa(f.Mem),
+		f.SwapTotal, f.SwapUsed, f.NetRx, f.NetTx, f.NetSpeed)
+	for i, ni := range f.Nets {
+		if i > 0 {
+			w.WriteByte(',')
+		}
+		fmt.Fprintf(w, `{"name":%s,"rxBps":%d,"txBps":%d,"speed":%d}`,
+			jstr(ni.Name), ni.RxBps, ni.TxBps, ni.Speed)
+	}
+	w.WriteString(`],"disks":[`)
+	for i, d := range f.Disks {
+		if i > 0 {
+			w.WriteByte(',')
+		}
+		fmt.Fprintf(w, `{"mount":%s,"dev":%s,"fsType":%s,"total":%d,"free":%d,"used":%d,"rBps":%d,"wBps":%d,"busy":%s,"kind":%s}`,
+			jstr(d.Mount), jstr(d.Dev), jstr(d.FSType), d.Total, d.Free, d.Used, d.RBps, d.WBps, ftoa(d.Busy), jstr(d.Kind))
+	}
+	w.WriteString(`],"procs":[`)
 	for i, p := range f.Procs {
 		if i > 0 {
 			w.WriteByte(',')
