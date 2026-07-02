@@ -145,6 +145,68 @@ func (a *App) Disconnect(id string) {
 	a.mgr.Stop(id)
 }
 
+// ---- Cluster (multi-host) ----
+
+// SaveHosts upserts a batch of hosts in one call and returns the stored records.
+// Used when registering a cluster: the caller assigns a shared ClusterID/Name to
+// each host before saving.
+func (a *App) SaveHosts(hosts []host.Host) ([]host.Host, error) {
+	if a.hosts == nil {
+		return nil, fmt.Errorf("host store unavailable")
+	}
+	out := make([]host.Host, 0, len(hosts))
+	for _, h := range hosts {
+		saved, err := a.hosts.Save(h)
+		if err != nil {
+			return out, err
+		}
+		out = append(out, saved)
+	}
+	return out, nil
+}
+
+// ClusterConnectResult reports the outcome of connecting one host in a batch.
+type ClusterConnectResult struct {
+	HostID string               `json:"hostId"`
+	Caps   monitor.Capabilities `json:"caps"`
+	Err    string               `json:"err"`
+}
+
+// ConnectMany dials, probes and starts streaming for several hosts concurrently
+// (9 sequential SSH dials would be slow). Each host reuses the same per-host
+// session machinery as Connect; frames/status arrive via the usual events.
+func (a *App) ConnectMany(ids []string, intervalSec int) []ClusterConnectResult {
+	results := make([]ClusterConnectResult, len(ids))
+	var wg sync.WaitGroup
+	for i, id := range ids {
+		wg.Add(1)
+		go func(i int, id string) {
+			defer wg.Done()
+			r := ClusterConnectResult{HostID: id}
+			h, ok, err := a.hosts.Get(id)
+			if err != nil {
+				r.Err = err.Error()
+			} else if !ok {
+				r.Err = fmt.Sprintf("host %s not found", id)
+			} else if caps, err := a.mgr.Start(a.ctx, h, intervalSec); err != nil {
+				r.Err = err.Error()
+			} else {
+				r.Caps = caps
+			}
+			results[i] = r
+		}(i, id)
+	}
+	wg.Wait()
+	return results
+}
+
+// DisconnectMany stops streaming for several hosts at once.
+func (a *App) DisconnectMany(ids []string) {
+	for _, id := range ids {
+		a.mgr.Stop(id)
+	}
+}
+
 // SetInterval changes the live refresh interval (seconds, 1–60) for a connected
 // host, restarting just the sampler stream.
 func (a *App) SetInterval(id string, intervalSec int) error {

@@ -12,6 +12,8 @@ export namespace host {
 	    createdAt: any;
 	    // Go type: time
 	    updatedAt: any;
+	    clusterId?: string;
+	    clusterName?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Host(source);
@@ -28,6 +30,8 @@ export namespace host {
 	        this.keyPath = source["keyPath"];
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
+	        this.clusterId = source["clusterId"];
+	        this.clusterName = source["clusterName"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -53,6 +57,40 @@ export namespace host {
 
 export namespace main {
 	
+	export class ClusterConnectResult {
+	    hostId: string;
+	    caps: monitor.Capabilities;
+	    err: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClusterConnectResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hostId = source["hostId"];
+	        this.caps = this.convertValues(source["caps"], monitor.Capabilities);
+	        this.err = source["err"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class LogHostInfo {
 	    id: string;
 	    name: string;

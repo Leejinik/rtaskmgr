@@ -31,6 +31,12 @@ type Host struct {
 	KeyPath   string    `json:"keyPath"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+
+	// Cluster grouping. Empty ClusterID means a standalone host. Hosts sharing a
+	// ClusterID are shown as one collapsible group in the sidebar and can be
+	// connected/disconnected together and viewed on the cluster overview.
+	ClusterID   string `json:"clusterId,omitempty"`
+	ClusterName string `json:"clusterName,omitempty"`
 }
 
 func (h Host) port() int {

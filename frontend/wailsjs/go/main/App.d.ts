@@ -7,11 +7,15 @@ import {record} from '../models';
 
 export function Connect(arg1:string,arg2:number):Promise<monitor.Capabilities>;
 
+export function ConnectMany(arg1:Array<string>,arg2:number):Promise<Array<main.ClusterConnectResult>>;
+
 export function DeleteHost(arg1:string):Promise<void>;
 
 export function DeleteScheduled(arg1:string,arg2:string):Promise<void>;
 
 export function Disconnect(arg1:string):Promise<void>;
+
+export function DisconnectMany(arg1:Array<string>):Promise<void>;
 
 export function DownloadScheduledAndPlay(arg1:string,arg2:string):Promise<main.LogMeta>;
 
@@ -34,6 +38,8 @@ export function OpenLogDialog():Promise<main.LogMeta>;
 export function ProcessHistory(arg1:string,arg2:number):Promise<Array<record.Point>>;
 
 export function SaveHost(arg1:host.Host):Promise<host.Host>;
+
+export function SaveHosts(arg1:Array<host.Host>):Promise<Array<host.Host>>;
 
 export function SetInterval(arg1:string,arg2:number):Promise<void>;
 

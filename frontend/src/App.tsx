@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { EventsOn } from "../wailsjs/runtime";
 import {
   ListHosts, Connect, Disconnect, DeleteHost, SetInterval,
+  ConnectMany, DisconnectMany,
   StartRecording, StopRecording,
   NethogsInstall, NethogsRollback,
   OpenLogDialog, LogFrames,
@@ -14,6 +15,8 @@ import ProcTable from "./components/ProcTable";
 import PerformanceView from "./components/PerformanceView";
 import DetailModal from "./components/DetailModal";
 import ConnectDialog from "./components/ConnectDialog";
+import ClusterDialog from "./components/ClusterDialog";
+import ClusterOverview from "./components/ClusterOverview";
 import ContextMenu from "./components/ContextMenu";
 import PlaybackBar from "./components/PlaybackBar";
 import ScheduledModal from "./components/ScheduledModal";
@@ -59,7 +62,22 @@ export default function App() {
   const [playback, setPlayback] = useState<Playback | null>(null);
 
   const [dialog, setDialog] = useState<{ open: boolean; editing?: host.Host }>({ open: false });
+  const [clusterDialogOpen, setClusterDialogOpen] = useState(false);
   const [ctx, setCtx] = useState<{ x: number; y: number; h: host.Host } | null>(null);
+  const [clusterCtx, setClusterCtx] = useState<{ x: number; y: number; id: string; name: string } | null>(null);
+  // When set, the main area shows the cluster overview dashboard instead of a
+  // single host. Selecting a host (row or overview card) clears it.
+  const [overviewClusterId, setOverviewClusterId] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem("rtm.collapsed") || "{}"); } catch { return {}; }
+  });
+  function toggleCollapse(cid: string) {
+    setCollapsed((prev) => {
+      const next = { ...prev, [cid]: !prev[cid] };
+      try { localStorage.setItem("rtm.collapsed", JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }
   const [recording, setRecording] = useState<{ active: boolean; hostId: string; path: string }>(
     { active: false, hostId: "", path: "" }
   );
@@ -236,6 +254,7 @@ export default function App() {
   async function handleSaved(h: host.Host, connect: boolean) {
     setDialog({ open: false });
     await refreshHosts();
+    setOverviewClusterId(null);
     setSelectedId(h.id);
     if (connect) void handleConnect(h.id);
   }
@@ -247,6 +266,85 @@ export default function App() {
     await DeleteHost(id).catch((e) => showToast(`삭제 실패: ${e}`));
     const list = await refreshHosts();
     if (selectedId === id) setSelectedId(list[0]?.id ?? null);
+  }
+
+  // ---- cluster helpers ----
+  function selectHost(id: string) {
+    setOverviewClusterId(null);
+    setSelectedId(id);
+  }
+
+  function openOverview(cid: string) {
+    setSelectedId(null);
+    setDetailPid(null);
+    setOverviewClusterId(cid);
+  }
+
+  async function handleClusterSaved(saved: host.Host[], connect: boolean) {
+    setClusterDialogOpen(false);
+    await refreshHosts();
+    const cid = (saved[0] as any)?.clusterId as string | undefined;
+    if (cid) openOverview(cid);
+    if (connect && saved.length) {
+      const ids = saved.map((h) => h.id);
+      setStatus((prev) => {
+        const n = { ...prev };
+        ids.forEach((id) => { n[id] = { state: "connecting", detail: "" }; });
+        return n;
+      });
+      try {
+        const res = await ConnectMany(ids, refreshSec);
+        setCaps((prev) => {
+          const n = { ...prev };
+          (res ?? []).forEach((r) => { if (!r.err) n[r.hostId] = r.caps; });
+          return n;
+        });
+        const failed = (res ?? []).filter((r) => r.err);
+        if (failed.length) showToast(`${failed.length}대 연결 실패 — 카드에서 개별 재시도`);
+      } catch (e: any) {
+        showToast(`클러스터 연결 실패: ${e}`);
+      }
+    }
+  }
+
+  async function connectCluster(ids: string[]) {
+    if (!ids.length) return;
+    setStatus((prev) => {
+      const n = { ...prev };
+      ids.forEach((id) => { if (n[id]?.state !== "streaming") n[id] = { state: "connecting", detail: "" }; });
+      return n;
+    });
+    try {
+      const res = await ConnectMany(ids, refreshSec);
+      setCaps((prev) => {
+        const n = { ...prev };
+        (res ?? []).forEach((r) => { if (!r.err) n[r.hostId] = r.caps; });
+        return n;
+      });
+      const failed = (res ?? []).filter((r) => r.err);
+      if (failed.length) showToast(`${failed.length}대 연결 실패`);
+    } catch (e: any) {
+      showToast(`연결 실패: ${e}`);
+    }
+  }
+
+  function disconnectCluster(ids: string[]) {
+    DisconnectMany(ids);
+    ids.forEach((id) => {
+      setFrames((prev) => { const n = { ...prev }; delete n[id]; return n; });
+      setSysHist((prev) => { const n = { ...prev }; delete n[id]; return n; });
+      setNethogs((prev) => { const n = { ...prev }; delete n[id]; return n; });
+    });
+  }
+
+  async function handleClusterDelete(cid: string, name: string, ids: string[]) {
+    if (!window.confirm(`클러스터 '${name}' 의 서버 ${ids.length}대를 모두 삭제할까요?`)) return;
+    disconnectCluster(ids);
+    for (const id of ids) {
+      await DeleteHost(id).catch((e) => showToast(`삭제 실패: ${e}`));
+    }
+    await refreshHosts();
+    if (overviewClusterId === cid) setOverviewClusterId(null);
   }
 
   // onSort: each click cycles the column through ascending → descending →
@@ -272,6 +370,29 @@ export default function App() {
     });
   }
 
+  // Group hosts into named clusters (📦) + standalone. Order preserves ListHosts'
+  // name sort; groups appear in first-seen order.
+  const clusterGroups: { id: string; name: string; hosts: host.Host[] }[] = [];
+  const standalone: host.Host[] = [];
+  const groupIndex = new Map<string, number>();
+  for (const h of hosts) {
+    const cid = (h as any).clusterId as string | undefined;
+    if (cid) {
+      let idx = groupIndex.get(cid);
+      if (idx === undefined) {
+        idx = clusterGroups.length;
+        groupIndex.set(cid, idx);
+        clusterGroups.push({ id: cid, name: (h as any).clusterName || cid, hosts: [] });
+      }
+      clusterGroups[idx].hosts.push(h);
+    } else {
+      standalone.push(h);
+    }
+  }
+  const overviewCluster = overviewClusterId
+    ? clusterGroups.find((g) => g.id === overviewClusterId) ?? null
+    : null;
+
   const selected = hosts.find((h) => h.id === selectedId) ?? null;
   const frame = selectedId ? frames[selectedId] : undefined;
   const st = selectedId ? status[selectedId] : undefined;
@@ -279,6 +400,39 @@ export default function App() {
   const connected = st?.state === "streaming" && !!frame;
   const detailProc =
     frame && detailPid != null ? frame.procs.find((p) => p.pid === detailPid) : undefined;
+  const selectedClusterId = (selected as any)?.clusterId as string | undefined;
+
+  const renderHostItem = (h: host.Host, inCluster: boolean) => {
+    const s = status[h.id]?.state;
+    return (
+      <div
+        key={h.id}
+        className={"host-item" + (selectedId === h.id ? " selected" : "") + (inCluster ? " in-cluster" : "")}
+        onClick={() => selectHost(h.id)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setCtx({ x: e.clientX, y: e.clientY, h });
+        }}
+      >
+        <div className="host-line1">
+          <span className={`dot ${s ?? ""}`} />
+          <span className="host-name">{h.name}</span>
+          <button
+            className="host-more"
+            title="편집 / 삭제"
+            onClick={(e) => {
+              e.stopPropagation();
+              const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              setCtx({ x: r.right, y: r.bottom, h });
+            }}
+          >
+            ⋯
+          </button>
+        </div>
+        <div className="host-line2">{h.user}@{h.addr}</div>
+      </div>
+    );
+  };
 
   // ---- playback screen (log reader) ----
   if (playback) {
@@ -361,48 +515,70 @@ export default function App() {
       <aside className="sidebar">
         <div className="sidebar-header">
           <span className="title">호스트</span>
-          <button className="toolbtn primary" onClick={() => setDialog({ open: true })}>
-            + 추가
-          </button>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button className="toolbtn primary" onClick={() => setDialog({ open: true })}>
+              + 호스트
+            </button>
+            <button className="toolbtn" onClick={() => setClusterDialogOpen(true)}>
+              + 클러스터
+            </button>
+          </div>
         </div>
         <div className="sidebar-sub">RHEL8/9 SSH 대상</div>
         <div className="host-list">
           {hosts.length === 0 ? (
             <div className="sidebar-empty">
-              저장된 호스트가 없습니다.<br />“+ 추가”로 등록하세요.
+              저장된 호스트가 없습니다.<br />“+ 호스트” 또는 “+ 클러스터”로 등록하세요.
             </div>
           ) : (
-            hosts.map((h) => {
-              const s = status[h.id]?.state;
-              return (
-                <div
-                  key={h.id}
-                  className={"host-item" + (selectedId === h.id ? " selected" : "")}
-                  onClick={() => setSelectedId(h.id)}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    setCtx({ x: e.clientX, y: e.clientY, h });
-                  }}
-                >
-                  <div className="host-line1">
-                    <span className={`dot ${s ?? ""}`} />
-                    <span className="host-name">{h.name}</span>
-                    <button
-                      className="host-more"
-                      title="편집 / 삭제"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                        setCtx({ x: r.right, y: r.bottom, h });
+            <>
+              {clusterGroups.map((g) => {
+                const ids = g.hosts.map((h) => h.id);
+                const conn = g.hosts.filter((h) => status[h.id]?.state === "streaming").length;
+                const isCollapsed = !!collapsed[g.id];
+                return (
+                  <div key={g.id} className="cluster-group">
+                    <div
+                      className={"cluster-head" + (overviewClusterId === g.id ? " selected" : "")}
+                      onClick={() => openOverview(g.id)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        setClusterCtx({ x: e.clientX, y: e.clientY, id: g.id, name: g.name });
                       }}
                     >
-                      ⋯
-                    </button>
+                      <span
+                        className="caret"
+                        onClick={(e) => { e.stopPropagation(); toggleCollapse(g.id); }}
+                        title={isCollapsed ? "펼치기" : "접기"}
+                      >
+                        {isCollapsed ? "▸" : "▾"}
+                      </span>
+                      <span className="cluster-icon">📦</span>
+                      <span className="host-name">{g.name}</span>
+                      <span className="cluster-count">{conn}/{g.hosts.length}</span>
+                      <button
+                        className="host-more"
+                        title="클러스터 편집 / 삭제"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                          setClusterCtx({ x: r.right, y: r.bottom, id: g.id, name: g.name });
+                        }}
+                      >
+                        ⋯
+                      </button>
+                    </div>
+                    {!isCollapsed && g.hosts.map((h) => renderHostItem(h, true))}
                   </div>
-                  <div className="host-line2">{h.user}@{h.addr}</div>
-                </div>
-              );
-            })
+                );
+              })}
+              {standalone.length > 0 && (
+                <>
+                  {clusterGroups.length > 0 && <div className="host-group-sep">개별 호스트</div>}
+                  {standalone.map((h) => renderHostItem(h, false))}
+                </>
+              )}
+            </>
           )}
         </div>
         <div className="sidebar-footer">
@@ -418,10 +594,31 @@ export default function App() {
       </aside>
 
       {/* ---- main ---- */}
+      {overviewCluster ? (
+        <ClusterOverview
+          clusterName={overviewCluster.name}
+          hosts={overviewCluster.hosts}
+          frames={frames}
+          status={status}
+          sysHist={sysHist}
+          refreshSec={refreshSec}
+          onOpenHost={selectHost}
+          onConnectOne={handleConnect}
+          onConnectAll={() => connectCluster(overviewCluster.hosts.map((h) => h.id))}
+          onDisconnectAll={() => disconnectCluster(overviewCluster.hosts.map((h) => h.id))}
+          onChangeInterval={changeInterval}
+        />
+      ) : (
       <main className="main">
         <div className="main-topbar">
           {selected ? (
             <>
+              {selectedClusterId && (
+                <button className="toolbtn" title="클러스터 요약으로 돌아가기"
+                  onClick={() => openOverview(selectedClusterId)}>
+                  ← 클러스터
+                </button>
+              )}
               <span className="main-title">
                 {selected.name}
                 <span className="sub">{selected.user}@{selected.addr}</span>
@@ -576,12 +773,38 @@ export default function App() {
           )}
         </div>
       </main>
+      )}
 
       {dialog.open && (
         <ConnectDialog
           initial={dialog.editing}
           onSaved={handleSaved}
           onClose={() => setDialog({ open: false })}
+        />
+      )}
+
+      {clusterDialogOpen && (
+        <ClusterDialog
+          onSaved={handleClusterSaved}
+          onClose={() => setClusterDialogOpen(false)}
+        />
+      )}
+
+      {clusterCtx && (
+        <ContextMenu
+          x={clusterCtx.x}
+          y={clusterCtx.y}
+          items={[
+            { label: "요약 보기", onClick: () => openOverview(clusterCtx.id) },
+            {
+              label: "클러스터 삭제", danger: true,
+              onClick: () => {
+                const g = clusterGroups.find((x) => x.id === clusterCtx.id);
+                if (g) handleClusterDelete(g.id, g.name, g.hosts.map((h) => h.id));
+              },
+            },
+          ]}
+          onClose={() => setClusterCtx(null)}
         />
       )}
 

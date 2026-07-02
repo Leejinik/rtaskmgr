@@ -6,6 +6,10 @@ export function Connect(arg1, arg2) {
   return window['go']['main']['App']['Connect'](arg1, arg2);
 }
 
+export function ConnectMany(arg1, arg2) {
+  return window['go']['main']['App']['ConnectMany'](arg1, arg2);
+}
+
 export function DeleteHost(arg1) {
   return window['go']['main']['App']['DeleteHost'](arg1);
 }
@@ -16,6 +20,10 @@ export function DeleteScheduled(arg1, arg2) {
 
 export function Disconnect(arg1) {
   return window['go']['main']['App']['Disconnect'](arg1);
+}
+
+export function DisconnectMany(arg1) {
+  return window['go']['main']['App']['DisconnectMany'](arg1);
 }
 
 export function DownloadScheduledAndPlay(arg1, arg2) {
@@ -60,6 +68,10 @@ export function ProcessHistory(arg1, arg2) {
 
 export function SaveHost(arg1) {
   return window['go']['main']['App']['SaveHost'](arg1);
+}
+
+export function SaveHosts(arg1) {
+  return window['go']['main']['App']['SaveHosts'](arg1);
 }
 
 export function SetInterval(arg1, arg2) {
