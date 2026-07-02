@@ -940,21 +940,28 @@ table.proc tbody tr.sel td {
   cursor: col-resize;
   z-index: 2;
 }
-/* faint divider line, always visible; brightens on hover */
+/* accent line shown only while hovering a draggable boundary */
 .col-resizer::after {
   content: "";
   position: absolute;
   top: 3px;
   bottom: 3px;
   right: 3px;
-  width: 1px;
-  background: var(--text-mute);
-  opacity: 0.4;
-}
-.col-resizer:hover::after {
   width: 2px;
   background: var(--accent);
+  opacity: 0;
+}
+.col-resizer:hover::after {
   opacity: 1;
+}
+/* consistent faint separator on every column boundary (resizable or not) */
+.pc-table th,
+.pc-table td {
+  border-right: 1px solid var(--border);
+}
+.pc-table th:last-child,
+.pc-table td:last-child {
+  border-right: none;
 }
 /* while dragging a column divider, force the resize cursor everywhere and
    suppress text selection */
