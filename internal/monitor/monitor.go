@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"strconv"
@@ -541,6 +542,9 @@ func (m *Manager) RollbackNethogs(hostID string) error {
 		s.nhCancel = nil
 	}
 	s.setActive(false)
+	// Make sure nethogs is really gone before we touch the package (the watchdog
+	// stop is async).
+	_, _ = m.sudoRun(s, "pkill -TERM -x nethogs 2>/dev/null; true")
 
 	if s.nhInstalledByUs {
 		cmd := "dnf remove --disablerepo='*' -y nethogs"
@@ -566,27 +570,49 @@ func (m *Manager) RollbackNethogs(hostID string) error {
 // into a pid -> bytes/s map. Each "Refreshing:" line begins a fresh block, so we
 // accumulate and swap atomically to reflect the current instant.
 func (m *Manager) startNethogs(s *session, hostID string) error {
+	// Clear any stale nethogs orphaned by a previously crashed/closed session
+	// before starting a fresh one (best effort; -x matches the process name only).
+	_, _ = m.sudoRun(s, "pkill -TERM -x nethogs 2>/dev/null; true")
+
 	nctx, ncancel := context.WithCancel(s.ctx)
 	sess, err := s.client.NewSession()
 	if err != nil {
 		ncancel()
 		return err
 	}
-	cmd := "nethogs -t -d 1"
+
+	// Watchdog wrapper: nethogs is killed the instant this SSH channel's stdin
+	// reaches EOF — which happens on a clean stop (we close the pipe below) AND on
+	// app crash / network drop (sshd closes the channel). Running the wrapper under
+	// sudo lets it kill the root-owned nethogs by PID. We deliberately do NOT rely
+	// on ssh Signal(SIGTERM): OpenSSH's sshd ignores signal requests on exec
+	// channels, which previously left nethogs running (reparented to PID 1) after
+	// disconnects — pegging CPU/memory for days.
+	inner := "nethogs -t -d 1 & np=$!; while read _x; do :; done; kill -TERM $np 2>/dev/null; wait $np 2>/dev/null"
+	cmd := "sh -c " + shellQuote(inner)
 	if s.useSudo {
-		sess.Stdin = strings.NewReader(s.password + "\n")
-		cmd = "sudo -S -p '' nethogs -t -d 1"
+		cmd = "sudo -S -p '' sh -c " + shellQuote(inner)
 	}
+
+	pr, pw := io.Pipe()
+	sess.Stdin = pr
 	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		ncancel()
+		_ = pw.Close()
 		sess.Close()
 		return err
 	}
 	if err := sess.Start(cmd); err != nil {
 		ncancel()
+		_ = pw.Close()
 		sess.Close()
 		return err
+	}
+	if s.useSudo {
+		// Feed the sudo password, then keep the pipe open so the remote read loop
+		// blocks until we (or a dropped connection) close its stdin.
+		go func() { _, _ = io.WriteString(pw, s.password+"\n") }()
 	}
 	s.nhCancel = ncancel
 	s.setActive(true)
@@ -594,7 +620,7 @@ func (m *Manager) startNethogs(s *session, hostID string) error {
 
 	go func() {
 		<-nctx.Done()
-		sess.Signal(ssh.SIGTERM)
+		_ = pw.Close() // EOF → remote watchdog kills nethogs by PID
 		sess.Close()
 	}()
 	go func() {
