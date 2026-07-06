@@ -19,6 +19,8 @@ interface Props {
   onConnectAll: () => void;
   onDisconnectAll: () => void;
   onChangeInterval: (sec: number) => void;
+  // Right-click a process row -> open the terminate menu, pinned to this host.
+  onProcMenu?: (hostId: string, pid: number, name: string, x: number, y: number) => void;
 }
 
 const fmtGB = (kib: number) => `${(kib / 1024 / 1024).toFixed(1)} GB`;
@@ -140,7 +142,7 @@ interface Sort { key: ColKey; dir: 1 | -1 }
 type Density = "compact" | "normal" | "wide";
 
 function ServerProcColumn({
-  h, frame, st, cols, colW, density, hideKthreads, sort, onSort, onResizeStart, onColMenu, onOpen, onConnect,
+  h, frame, st, cols, colW, density, hideKthreads, sort, onSort, onResizeStart, onColMenu, onRowMenu, onOpen, onConnect,
 }: {
   h: host.Host;
   frame?: Frame;
@@ -153,6 +155,7 @@ function ServerProcColumn({
   onSort: (k: ColKey) => void;
   onResizeStart: (k: ColKey, e: React.MouseEvent) => void;
   onColMenu: (k: ColKey, e: React.MouseEvent) => void;
+  onRowMenu?: (pid: number, name: string, e: React.MouseEvent) => void;
   onOpen: () => void;
   onConnect: () => void;
 }) {
@@ -197,7 +200,14 @@ function ServerProcColumn({
             </thead>
             <tbody>
               {procs.map((p) => (
-                <tr key={p.pid}>
+                <tr
+                  key={p.pid}
+                  onContextMenu={
+                    onRowMenu
+                      ? (e) => { e.preventDefault(); e.stopPropagation(); onRowMenu(p.pid, p.name, e); }
+                      : undefined
+                  }
+                >
                   {cols.map((c) => (
                     <td key={c} className={c === "name" || c === "service" ? "left" : ""}
                       title={c === "name" ? p.name : c === "service" ? p.service : undefined}>
@@ -254,7 +264,7 @@ const PER_PAGE_OPTS: (number | "all")[] = [1, 2, 3, 4, 5, "all"];
 
 export default function ClusterOverview({
   clusterName, hosts, frames, status, sysHist, refreshSec,
-  onOpenHost, onConnectOne, onConnectAll, onDisconnectAll, onChangeInterval,
+  onOpenHost, onConnectOne, onConnectAll, onDisconnectAll, onChangeInterval, onProcMenu,
 }: Props) {
   const connectedCount = hosts.filter((h) => status[h.id]?.state === "streaming").length;
   const [mode, setMode] = useState<"summary" | "proc">("summary");
@@ -423,6 +433,7 @@ export default function ClusterOverview({
               onSort={onSort}
               onResizeStart={startResize}
               onColMenu={(k, e) => setColMenu({ x: e.clientX, y: e.clientY, col: k })}
+              onRowMenu={onProcMenu ? (pid, name, e) => onProcMenu(h.id, pid, name, e.clientX, e.clientY) : undefined}
               onOpen={() => onOpenHost(h.id)}
               onConnect={() => onConnectOne(h.id)}
             />

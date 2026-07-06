@@ -6,6 +6,8 @@ import {
   StartRecording, StopRecording,
   NethogsInstall, NethogsRollback,
   OpenLogDialog, LogFrames,
+  KillProcess,
+  PwConfig, RenewPasswords,
 } from "../wailsjs/go/main/App";
 
 const REFRESH_OPTS = [1, 2, 3, 5, 10, 15, 20, 30, 60];
@@ -16,10 +18,15 @@ import PerformanceView from "./components/PerformanceView";
 import DetailModal from "./components/DetailModal";
 import ConnectDialog from "./components/ConnectDialog";
 import ClusterDialog from "./components/ClusterDialog";
+import ClusterPasswordDialog from "./components/ClusterPasswordDialog";
 import ClusterOverview from "./components/ClusterOverview";
 import ContextMenu from "./components/ContextMenu";
+import ConfirmDialog from "./components/ConfirmDialog";
 import PlaybackBar from "./components/PlaybackBar";
 import ScheduledModal from "./components/ScheduledModal";
+import PasswordDialog from "./components/PasswordDialog";
+import { fmtUptime, fmtClock } from "./format";
+import { PwInfo, isUrgent, pwTooltip, expLabel } from "./pw";
 
 interface Playback {
   meta: main.LogMeta;
@@ -63,8 +70,15 @@ export default function App() {
 
   const [dialog, setDialog] = useState<{ open: boolean; editing?: host.Host }>({ open: false });
   const [clusterDialogOpen, setClusterDialogOpen] = useState(false);
+  const [clusterEdit, setClusterEdit] = useState<{ id: string; name: string; hosts: host.Host[] } | null>(null);
+  const [clusterPwDialog, setClusterPwDialog] = useState<{ id: string; name: string } | null>(null);
   const [ctx, setCtx] = useState<{ x: number; y: number; h: host.Host } | null>(null);
   const [clusterCtx, setClusterCtx] = useState<{ x: number; y: number; id: string; name: string } | null>(null);
+  // Right-click-on-process menu and the terminate confirmation it opens. hostId
+  // is pinned to the row that was clicked (single-host OR a cluster column), so
+  // the kill never resolves the target from whatever happens to be "selected".
+  const [procCtx, setProcCtx] = useState<{ x: number; y: number; pid: number; name: string; hostId: string } | null>(null);
+  const [killConfirm, setKillConfirm] = useState<{ pid: number; name: string; force: boolean; hostId: string } | null>(null);
   // When set, the main area shows the cluster overview dashboard instead of a
   // single host. Selecting a host (row or overview card) clears it.
   const [overviewClusterId, setOverviewClusterId] = useState<string | null>(null);
@@ -82,6 +96,13 @@ export default function App() {
     { active: false, hostId: "", path: "" }
   );
   const [schedOpen, setSchedOpen] = useState(false);
+  // Managed-account (liz/root) password expiry, keyed by host id. Seeded from the
+  // persisted host cache and refreshed live via the "pwstatus" event on connect.
+  const [pwStatus, setPwStatus] = useState<Record<string, PwInfo>>({});
+  const [pwWarnDays, setPwWarnDays] = useState(10);
+  const [pwDismissed, setPwDismissed] = useState<Set<string>>(new Set());
+  const [pwAlert, setPwAlert] = useState<{ hostId: string; name: string } | null>(null);
+  const [pwDialog, setPwDialog] = useState<{ hostId: string; name: string } | null>(null);
   const [refreshSec, setRefreshSec] = useState<number>(
     () => Number(localStorage.getItem("rtm.interval")) || 10
   );
@@ -97,10 +118,50 @@ export default function App() {
   const refreshHosts = async () => {
     const h = await ListHosts().catch(() => [] as host.Host[]);
     setHosts(h ?? []);
+    // Seed the expiry cache from each host's persisted last-known values so the
+    // hover tooltip works before (re)connecting. Live "pwstatus" events override.
+    setPwStatus((prev) => {
+      const next = { ...prev };
+      for (const x of h ?? []) {
+        const liz = (x as any).lizExpDays ?? 0;
+        const root = (x as any).rootExpDays ?? 0;
+        if (!next[x.id] && (liz !== 0 || root !== 0)) {
+          next[x.id] = { hasLiz: liz !== 0, hasRoot: root !== 0, lizExpDays: liz, rootExpDays: root };
+        }
+      }
+      return next;
+    });
     return h ?? [];
   };
 
+  // Terminate a process on an explicit host (pinned by the row that was
+  // right-clicked). Only reachable through the confirmation dialog. Before
+  // signalling, re-check the host's latest frame: if the PID vanished or now
+  // carries a different name, the row is stale — refuse rather than risk hitting
+  // a recycled PID. (The exit→reuse race within the SSH round-trip is inherent
+  // to any kill-by-PID tool and can't be fully closed; this catches the common
+  // "already exited / changed" case.)
+  async function doKill(t: { hostId: string; pid: number; name: string; force: boolean }) {
+    if (!t.hostId) return;
+    const live = frames[t.hostId]?.procs.find((p) => p.pid === t.pid);
+    if (!live) {
+      showToast(`PID ${t.pid} 프로세스가 이미 종료되었거나 목록에 없습니다`);
+      return;
+    }
+    if (live.name !== t.name) {
+      showToast(`PID ${t.pid}가 다른 프로세스로 바뀌었습니다 (${t.name} → ${live.name}). 다시 시도하세요`);
+      return;
+    }
+    try {
+      await KillProcess(t.hostId, t.pid, t.force);
+      showToast(`PID ${t.pid} (${t.name}) ${t.force ? "강제 종료(SIGKILL)" : "종료(SIGTERM)"} 신호를 보냈습니다`);
+    } catch (e: any) {
+      showToast(typeof e === "string" ? e : e?.message ?? "프로세스 종료 실패");
+    }
+  }
+
   useEffect(() => { void refreshHosts(); }, []);
+  useEffect(() => { PwConfig().then((c) => setPwWarnDays(c.expiryWarnDays || 10)).catch(() => {}); }, []);
 
   // ---- backend events ----
   useEffect(() => {
@@ -129,14 +190,51 @@ export default function App() {
       }));
       if (s.msg) showToast(s.msg);
     });
+    const offPw = EventsOn("pwstatus", (s: any) => {
+      setPwStatus((prev) => ({
+        ...prev,
+        [s.hostId]: {
+          hasLiz: !!s.hasLiz, hasRoot: !!s.hasRoot,
+          lizExpDays: s.lizExpDays ?? 0, rootExpDays: s.rootExpDays ?? 0,
+          todayDays: s.todayDays, err: s.err,
+        },
+      }));
+    });
     const offRec = EventsOn("recording", (s: any) => {
       setRecording({ active: s.active, hostId: s.hostId || "", path: s.path || "" });
       if (s.auto) showToast("연결이 끊겨 실시간 기록을 자동 중지했습니다");
       else if (s.active) showToast(`기록 시작 — ${s.path}`);
       else if (s.path) showToast(`기록 종료 — ${s.path}`);
     });
-    return () => { offFrame(); offStatus(); offNet(); offRec(); };
+    return () => { offFrame(); offStatus(); offNet(); offPw(); offRec(); };
   }, []);
+
+  // Raise the expiry alert for the first urgent, not-yet-dismissed host. One at a
+  // time; acting on it (Y/N) dismisses that host so the next can surface.
+  useEffect(() => {
+    if (pwAlert) return;
+    for (const h of hosts) {
+      const info = pwStatus[h.id];
+      if (info && !pwDismissed.has(h.id) && isUrgent(info, pwWarnDays)) {
+        setPwAlert({ hostId: h.id, name: h.name });
+        break;
+      }
+    }
+  }, [pwStatus, hosts, pwWarnDays, pwDismissed, pwAlert]);
+
+  const dismissPw = (hostId: string) =>
+    setPwDismissed((prev) => { const n = new Set(prev); n.add(hostId); return n; });
+
+  async function alertRenew(hostId: string, name: string) {
+    showToast(`${name}: 패스워드 만료일 갱신 중… (창을 닫지 마세요)`);
+    try {
+      await RenewPasswords(hostId);
+      showToast(`${name}: 패스워드 만료일 갱신 완료`);
+    } catch (e: any) {
+      const msg = typeof e === "string" ? e : e?.message ?? "갱신 실패";
+      showToast(`${name}: 갱신 실패 — ${msg}. 🔑 패스워드 관리에서 이력을 확인하세요`);
+    }
+  }
 
   // ---- Ctrl+S toggles immediate recording for the selected host ----
   useEffect(() => {
@@ -280,10 +378,20 @@ export default function App() {
     setOverviewClusterId(cid);
   }
 
-  async function handleClusterSaved(saved: host.Host[], connect: boolean) {
+  async function handleClusterSaved(saved: host.Host[], connect: boolean, clusterId?: string) {
+    // When editing, delete any members that were removed (dropped from the rows).
+    if (clusterEdit) {
+      const keep = new Set(saved.map((h) => h.id));
+      const removed = clusterEdit.hosts.filter((h) => !keep.has(h.id));
+      if (removed.length) {
+        disconnectCluster(removed.map((h) => h.id));
+        for (const h of removed) await DeleteHost(h.id).catch(() => {});
+      }
+    }
     setClusterDialogOpen(false);
+    setClusterEdit(null);
     await refreshHosts();
-    const cid = (saved[0] as any)?.clusterId as string | undefined;
+    const cid = clusterId ?? ((saved[0] as any)?.clusterId as string | undefined);
     if (cid) openOverview(cid);
     if (connect && saved.length) {
       const ids = saved.map((h) => h.id);
@@ -395,6 +503,16 @@ export default function App() {
 
   const selected = hosts.find((h) => h.id === selectedId) ?? null;
   const frame = selectedId ? frames[selectedId] : undefined;
+  // While a process context menu or the terminate confirmation is open, hold the
+  // table on a frozen snapshot so live re-sorting can't slide a different row
+  // under the cursor between the right-click and pressing "종료" — otherwise the
+  // user aims at one process and signals another. doKill still validates against
+  // the LIVE frame, so a PID that truly exited/changed is caught regardless.
+  const tableFrozen = procCtx !== null || killConfirm !== null;
+  const frozenFrame = useRef<Frame | undefined>(undefined);
+  if (!tableFrozen) frozenFrame.current = undefined;
+  else if (frozenFrame.current === undefined) frozenFrame.current = frame;
+  const tableFrame = tableFrozen ? (frozenFrame.current ?? frame) : frame;
   const st = selectedId ? status[selectedId] : undefined;
   const cap = selectedId ? caps[selectedId] : undefined;
   const connected = st?.state === "streaming" && !!frame;
@@ -402,32 +520,80 @@ export default function App() {
     frame && detailPid != null ? frame.procs.find((p) => p.pid === detailPid) : undefined;
   const selectedClusterId = (selected as any)?.clusterId as string | undefined;
 
+  // Open the process right-click menu via a document-level, capture-phase
+  // listener rather than a React onContextMenu on the row. Wails production
+  // builds can swallow the row's synthetic contextmenu event (it never reaches
+  // React), but a capture-phase document listener fires reliably. We resolve the
+  // row from data-pid, so re-sorting between hover and click doesn't matter — the
+  // pid is whatever row the cursor is actually over. Live process view only.
+  useEffect(() => {
+    if (playback || !selected || !frame || view !== "proc") return;
+    const hostId = selected.id;
+    const onCtx = (e: MouseEvent) => {
+      const tr = (e.target as HTMLElement)?.closest?.("tr[data-pid]") as HTMLElement | null;
+      if (!tr) return; // right-click off a row → let it bubble and close any open menu
+      const pid = Number(tr.dataset.pid);
+      if (!Number.isFinite(pid)) return;
+      e.preventDefault();
+      e.stopPropagation(); // we own this event; don't let ContextMenu's close fire
+      const name = tr.dataset.name || String(pid);
+      setSelectedPid(pid);
+      setProcCtx({ x: e.clientX, y: e.clientY, pid, name, hostId });
+    };
+    document.addEventListener("contextmenu", onCtx, true);
+    return () => document.removeEventListener("contextmenu", onCtx, true);
+  }, [playback, selected, frame, view]);
+
+  // Sidebar right-click menus (host / cluster). Bound at the document capture
+  // level for the same reason as the process rows — Wails production can swallow
+  // a React onContextMenu — so the ⋯ buttons are gone and right-click is the only
+  // trigger. Right-clicking empty space matches nothing and bubbles, closing any
+  // open menu via ContextMenu's own window listener.
+  useEffect(() => {
+    const onCtx = (e: MouseEvent) => {
+      const el = e.target as HTMLElement | null;
+      const hostEl = el?.closest?.("[data-host-id]") as HTMLElement | null;
+      if (hostEl) {
+        const h = hosts.find((x) => x.id === hostEl.dataset.hostId);
+        if (h) {
+          e.preventDefault();
+          e.stopPropagation();
+          setClusterCtx(null);
+          setCtx({ x: e.clientX, y: e.clientY, h });
+        }
+        return;
+      }
+      const clEl = el?.closest?.("[data-cluster-id]") as HTMLElement | null;
+      if (clEl) {
+        const cid = clEl.dataset.clusterId!;
+        const member = hosts.find((x) => (x as any).clusterId === cid);
+        if (member) {
+          e.preventDefault();
+          e.stopPropagation();
+          setCtx(null);
+          setClusterCtx({ x: e.clientX, y: e.clientY, id: cid, name: (member as any).clusterName || cid });
+        }
+      }
+    };
+    document.addEventListener("contextmenu", onCtx, true);
+    return () => document.removeEventListener("contextmenu", onCtx, true);
+  }, [hosts]);
+
   const renderHostItem = (h: host.Host, inCluster: boolean) => {
     const s = status[h.id]?.state;
+    const pwUrgent = isUrgent(pwStatus[h.id], pwWarnDays);
     return (
       <div
         key={h.id}
+        data-host-id={h.id}
         className={"host-item" + (selectedId === h.id ? " selected" : "") + (inCluster ? " in-cluster" : "")}
+        title={pwTooltip(pwStatus[h.id])}
         onClick={() => selectHost(h.id)}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          setCtx({ x: e.clientX, y: e.clientY, h });
-        }}
       >
         <div className="host-line1">
           <span className={`dot ${s ?? ""}`} />
           <span className="host-name">{h.name}</span>
-          <button
-            className="host-more"
-            title="편집 / 삭제"
-            onClick={(e) => {
-              e.stopPropagation();
-              const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-              setCtx({ x: r.right, y: r.bottom, h });
-            }}
-          >
-            ⋯
-          </button>
+          {pwUrgent && <span className="pw-warn-badge" title="패스워드 만료 임박">🔑</span>}
         </div>
         <div className="host-line2">{h.user}@{h.addr}</div>
       </div>
@@ -536,15 +702,20 @@ export default function App() {
                 const ids = g.hosts.map((h) => h.id);
                 const conn = g.hosts.filter((h) => status[h.id]?.state === "streaming").length;
                 const isCollapsed = !!collapsed[g.id];
+                const pwUrgentCluster = g.hosts.some((h) => isUrgent(pwStatus[h.id], pwWarnDays));
+                const clusterPwTip = "패스워드 만료\n" + g.hosts.map((h) => {
+                  const info = pwStatus[h.id];
+                  const liz = info?.hasLiz ? expLabel(info.lizExpDays) : "-";
+                  const root = info?.hasRoot ? expLabel(info.rootExpDays) : "-";
+                  return `  ${h.name}: liz ${liz} / root ${root}`;
+                }).join("\n");
                 return (
                   <div key={g.id} className="cluster-group">
                     <div
+                      data-cluster-id={g.id}
                       className={"cluster-head" + (overviewClusterId === g.id ? " selected" : "")}
+                      title={clusterPwTip}
                       onClick={() => openOverview(g.id)}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        setClusterCtx({ x: e.clientX, y: e.clientY, id: g.id, name: g.name });
-                      }}
                     >
                       <span
                         className="caret"
@@ -555,18 +726,8 @@ export default function App() {
                       </span>
                       <span className="cluster-icon">📦</span>
                       <span className="host-name">{g.name}</span>
+                      {pwUrgentCluster && <span className="pw-warn-badge" title="패스워드 만료 임박">🔑</span>}
                       <span className="cluster-count">{conn}/{g.hosts.length}</span>
-                      <button
-                        className="host-more"
-                        title="클러스터 편집 / 삭제"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                          setClusterCtx({ x: r.right, y: r.bottom, id: g.id, name: g.name });
-                        }}
-                      >
-                        ⋯
-                      </button>
                     </div>
                     {!isCollapsed && g.hosts.map((h) => renderHostItem(h, true))}
                   </div>
@@ -607,6 +768,7 @@ export default function App() {
           onConnectAll={() => connectCluster(overviewCluster.hosts.map((h) => h.id))}
           onDisconnectAll={() => disconnectCluster(overviewCluster.hosts.map((h) => h.id))}
           onChangeInterval={changeInterval}
+          onProcMenu={(hostId, pid, name, x, y) => setProcCtx({ x, y, pid, name, hostId })}
         />
       ) : (
       <main className="main">
@@ -742,7 +904,7 @@ export default function App() {
 
         {selected && frame && view === "proc" && (
           <ProcTable
-            frame={frame}
+            frame={tableFrame ?? frame}
             search={search}
             hideKthreads={hideKthreads}
             topLevelOnly={topLevelOnly}
@@ -760,6 +922,9 @@ export default function App() {
         <div className="statusline">
           {frame && <span>{frame.ncpu} vCPU · 메모리 {(frame.memTotal / 1024 / 1024).toFixed(1)} GB</span>}
           {frame && <span>프로세스 {frame.procs.length}</span>}
+          {tableFrozen && view === "proc" && (
+            <span className="frozen" title="종료 대상을 고르는 동안 목록 순서가 고정됩니다">⏸ 목록 고정됨</span>
+          )}
           {cap && (
             <span>
               {cap.os || "?"} · 권한 {cap.sudo ? "관리자(sudo)" : "일반"} · nethogs {cap.nethogs ? "예" : "없음"}
@@ -783,19 +948,47 @@ export default function App() {
         />
       )}
 
-      {clusterDialogOpen && (
+      {(clusterDialogOpen || clusterEdit) && (
         <ClusterDialog
+          editing={clusterEdit ?? undefined}
           onSaved={handleClusterSaved}
-          onClose={() => setClusterDialogOpen(false)}
+          onClose={() => { setClusterDialogOpen(false); setClusterEdit(null); }}
         />
       )}
+
+      {clusterPwDialog && (() => {
+        const g = clusterGroups.find((x) => x.id === clusterPwDialog.id);
+        if (!g) return null;
+        const connectedIds = new Set(g.hosts.filter((h) => status[h.id]?.state === "streaming").map((h) => h.id));
+        return (
+          <ClusterPasswordDialog
+            clusterName={g.name}
+            hosts={g.hosts}
+            connectedIds={connectedIds}
+            pwStatus={pwStatus}
+            onClose={() => setClusterPwDialog(null)}
+            onToast={showToast}
+            onChanged={() => { void refreshHosts(); }}
+          />
+        );
+      })()}
 
       {clusterCtx && (
         <ContextMenu
           x={clusterCtx.x}
           y={clusterCtx.y}
           items={[
-            { label: "요약 보기", onClick: () => openOverview(clusterCtx.id) },
+            {
+              label: "🔑 클러스터 패스워드 관리",
+              onClick: () => setClusterPwDialog({ id: clusterCtx.id, name: clusterCtx.name }),
+            },
+            {
+              label: "클러스터 편집",
+              onClick: () => {
+                const g = clusterGroups.find((x) => x.id === clusterCtx.id);
+                if (g) setClusterEdit({ id: g.id, name: g.name, hosts: g.hosts });
+              },
+            },
             {
               label: "클러스터 삭제", danger: true,
               onClick: () => {
@@ -831,12 +1024,79 @@ export default function App() {
           x={ctx.x}
           y={ctx.y}
           items={[
+            { label: "🔑 패스워드 관리", onClick: () => setPwDialog({ hostId: ctx.h.id, name: ctx.h.name }) },
             { label: "편집", onClick: () => setDialog({ open: true, editing: ctx.h }) },
             { label: "삭제", danger: true, onClick: () => handleDelete(ctx.h.id) },
           ]}
           onClose={() => setCtx(null)}
         />
       )}
+
+      {procCtx && (
+        <ContextMenu
+          x={procCtx.x}
+          y={procCtx.y}
+          items={[
+            {
+              label: "프로세스 끝내기 (SIGTERM)",
+              danger: true,
+              onClick: () => setKillConfirm({ pid: procCtx.pid, name: procCtx.name, force: false, hostId: procCtx.hostId }),
+            },
+            {
+              label: "강제 종료 (SIGKILL)",
+              danger: true,
+              onClick: () => setKillConfirm({ pid: procCtx.pid, name: procCtx.name, force: true, hostId: procCtx.hostId }),
+            },
+          ]}
+          onClose={() => setProcCtx(null)}
+        />
+      )}
+
+      {killConfirm && (() => {
+        // Look up the live process so we can show how long it has been running.
+        // A PID that just got recycled reads as a few seconds — the cue the user
+        // needs to tell "still the same process" from "already died & reused".
+        const lp = frames[killConfirm.hostId]?.procs.find((p) => p.pid === killConfirm.pid);
+        const ft = frames[killConfirm.hostId]?.t ?? 0;
+        const hasUptime = !!lp && lp.start > 0 && ft > 0;
+        const uptimeSec = hasUptime ? ft / 1000 - lp!.start : NaN;
+        return (
+        <ConfirmDialog
+          title={killConfirm.force ? "강제 종료(SIGKILL)" : "프로세스 종료"}
+          danger
+          confirmLabel={killConfirm.force ? "강제 종료" : "종료"}
+          message={
+            <>
+              정말 종료하시겠습니까?
+              <div style={{ marginTop: 10, fontWeight: 600 }}>
+                {killConfirm.name} <span style={{ color: "var(--text-mute)" }}>(PID {killConfirm.pid})</span>
+              </div>
+              <div style={{ marginTop: 6, fontSize: 12.5 }}>
+                실행 시간:{" "}
+                {hasUptime ? (
+                  <>
+                    <b style={{ color: "var(--accent)" }}>{fmtUptime(uptimeSec)}</b>
+                    <span style={{ color: "var(--text-mute)" }}> · 시작 {fmtClock(lp!.start * 1000)}</span>
+                  </>
+                ) : (
+                  <span style={{ color: "var(--text-mute)" }}>알 수 없음</span>
+                )}
+              </div>
+              <div style={{ marginTop: 8, fontSize: 12.5, color: "var(--text-mute)" }}>
+                {killConfirm.force
+                  ? "SIGKILL은 프로세스가 정리 없이 즉시 강제 종료됩니다. 저장되지 않은 작업이 손실될 수 있습니다."
+                  : "저장되지 않은 작업이 손실될 수 있습니다."}
+              </div>
+            </>
+          }
+          onCancel={() => setKillConfirm(null)}
+          onConfirm={() => {
+            void doKill(killConfirm);
+            setKillConfirm(null);
+          }}
+        />
+        );
+      })()}
 
       {detailPid != null && selectedId && (
         <DetailModal
@@ -846,6 +1106,50 @@ export default function App() {
           onClose={() => setDetailPid(null)}
         />
       )}
+
+      {pwDialog && (
+        <PasswordDialog
+          hostId={pwDialog.hostId}
+          hostName={pwDialog.name}
+          connected={status[pwDialog.hostId]?.state === "streaming"}
+          info={pwStatus[pwDialog.hostId]}
+          currentPassword={hosts.find((h) => h.id === pwDialog.hostId)?.password ?? ""}
+          onClose={() => setPwDialog(null)}
+          onToast={showToast}
+          onChanged={() => { void refreshHosts(); }}
+        />
+      )}
+
+      {pwAlert && (() => {
+        const info = pwStatus[pwAlert.hostId];
+        return (
+          <ConfirmDialog
+            title="🔑 패스워드 만료 임박"
+            confirmLabel="갱신 (Y)"
+            cancelLabel="무시 (N)"
+            message={
+              <>
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>{pwAlert.name}</div>
+                <div style={{ fontSize: 12.5, lineHeight: 1.7 }}>
+                  {info?.hasLiz && <div>liz: <b>{expLabel(info.lizExpDays)}</b></div>}
+                  {info?.hasRoot && <div>root: <b>{expLabel(info.rootExpDays)}</b></div>}
+                </div>
+                <div style={{ marginTop: 10, fontSize: 12.5, color: "var(--text-mute)" }}>
+                  Y: 현재 패스워드를 유지한 채 만료일만 갱신합니다 (현재→임시→현재).<br />
+                  다른 패스워드로 바꾸려면 🔑 패스워드 관리를 이용하세요.
+                </div>
+              </>
+            }
+            onCancel={() => { dismissPw(pwAlert.hostId); setPwAlert(null); }}
+            onConfirm={() => {
+              const { hostId, name } = pwAlert;
+              dismissPw(hostId);
+              setPwAlert(null);
+              void alertRenew(hostId, name);
+            }}
+          />
+        );
+      })()}
 
       {toast && <div className="toast">{toast}</div>}
     </div>

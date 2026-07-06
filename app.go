@@ -15,6 +15,7 @@ import (
 
 	"rtaskmgr/internal/host"
 	"rtaskmgr/internal/monitor"
+	"rtaskmgr/internal/pwledger"
 	"rtaskmgr/internal/record"
 )
 
@@ -23,6 +24,7 @@ type App struct {
 	hosts *host.Store
 	mgr   *monitor.Manager
 	rec   *record.Recorder
+	led   *pwledger.Store
 	rpmFS fs.FS
 
 	logMu     sync.Mutex
@@ -62,6 +64,12 @@ func (a *App) startup(ctx context.Context) {
 		fmt.Println("recorder init failed:", err)
 	}
 	a.rec = rec
+
+	led, err := pwledger.New()
+	if err != nil {
+		fmt.Println("pwledger init failed:", err)
+	}
+	a.led = led
 
 	a.mgr = monitor.NewManager(a.onFrame, a.onStatus, a.onNethogs, a.rpmFS)
 }
@@ -138,7 +146,11 @@ func (a *App) Connect(id string, intervalSec int) (monitor.Capabilities, error) 
 	if !ok {
 		return monitor.Capabilities{}, fmt.Errorf("host %s not found", id)
 	}
-	return a.mgr.Start(a.ctx, h, intervalSec)
+	caps, err := a.mgr.Start(a.ctx, h, intervalSec)
+	if err == nil {
+		go a.refreshPwStatus(id)
+	}
+	return caps, err
 }
 
 func (a *App) Disconnect(id string) {
@@ -172,6 +184,148 @@ type ClusterConnectResult struct {
 	Err    string               `json:"err"`
 }
 
+// ---- Managed-account password management (liz / root) ----
+
+// pwRecorder journals rotation progress into the ledger and mirrors each step to
+// the UI via the "pwrotate" event. One instance is created per rotation call.
+type pwRecorder struct {
+	app      *App
+	hostID   string
+	hostName string
+	addr     string
+}
+
+func (r *pwRecorder) Begin(account, op, step, password string) string {
+	var id string
+	if r.app.led != nil {
+		id, _ = r.app.led.Append(pwledger.Entry{
+			HostID: r.hostID, HostName: r.hostName, Addr: r.addr,
+			Account: account, Op: op, Step: step, Password: password, Status: "pending",
+		})
+	}
+	wruntime.EventsEmit(r.app.ctx, "pwrotate", map[string]interface{}{
+		"id": id, "hostId": r.hostID, "account": account,
+		"op": op, "step": step, "status": "pending",
+	})
+	return id
+}
+
+func (r *pwRecorder) Done(id, status, errMsg string) {
+	if r.app.led != nil {
+		_ = r.app.led.SetStatus(id, status, errMsg)
+	}
+	wruntime.EventsEmit(r.app.ctx, "pwrotate", map[string]interface{}{
+		"id": id, "hostId": r.hostID, "status": status, "err": errMsg,
+	})
+}
+
+// refreshPwStatus reads liz/root expiry over the live session, caches it on the
+// host record (so the sidebar/hover show it without reconnecting) and emits a
+// "pwstatus" event. Safe to call in a goroutine; failures are reported, not fatal.
+func (a *App) refreshPwStatus(id string) {
+	st, err := a.mgr.PasswordStatus(id)
+	if err != nil {
+		wruntime.EventsEmit(a.ctx, "pwstatus", map[string]interface{}{
+			"hostId": id, "err": err.Error(),
+		})
+		return
+	}
+	if a.hosts != nil {
+		_ = a.hosts.UpdateExpiry(id, st.LizExpDays, st.RootExpDays, time.Now().UTC())
+	}
+	wruntime.EventsEmit(a.ctx, "pwstatus", map[string]interface{}{
+		"hostId": id, "hasLiz": st.HasLiz, "hasRoot": st.HasRoot,
+		"lizExpDays": st.LizExpDays, "rootExpDays": st.RootExpDays, "todayDays": st.TodayDays,
+	})
+}
+
+// PasswordStatus reads liz/root expiry on demand (requires a live session).
+func (a *App) PasswordStatus(id string) (monitor.PwStatus, error) {
+	return a.mgr.PasswordStatus(id)
+}
+
+// RenewPasswords refreshes the expiry date on liz+root without changing the
+// effective password (current -> temp -> current). Requires a live session.
+func (a *App) RenewPasswords(id string) error {
+	h, ok, err := a.hosts.Get(id)
+	if err != nil || !ok {
+		return fmt.Errorf("host %s not found", id)
+	}
+	cfg := pwledger.Config{TempPassword: pwledger.DefaultTempPassword}
+	if a.led != nil {
+		if c, e := a.led.Config(); e == nil {
+			cfg = c
+		}
+	}
+	rec := &pwRecorder{app: a, hostID: id, hostName: h.Name, addr: h.Addr}
+	err = a.mgr.RenewPasswords(id, cfg.TempPassword, rec)
+	// Sync the stored login credential to whatever the login account actually
+	// ended on — even on a mid-way failure — so reconnects keep working.
+	a.reconcileLoginPassword(id, h.User)
+	a.refreshPwStatus(id)
+	return err
+}
+
+// reconcileLoginPassword sets the host's stored password to the most recent
+// successfully-applied password for the login account, read from the ledger.
+// This keeps hosts.json in sync with reality after any rotation, including one
+// that failed partway (e.g. the renew restore step never landed).
+func (a *App) reconcileLoginPassword(id, user string) {
+	if a.hosts == nil || a.led == nil || (user != "liz" && user != "root") {
+		return
+	}
+	entries, err := a.led.Entries(id) // newest first
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.Account == user && e.Status == "ok" {
+			_ = a.hosts.UpdatePassword(id, e.Password)
+			return
+		}
+	}
+}
+
+// ChangePasswords sets a new password on BOTH liz and root (current -> new) and,
+// on success, persists it as the host's login password so reconnects work.
+func (a *App) ChangePasswords(id, newPassword string) error {
+	h, ok, err := a.hosts.Get(id)
+	if err != nil || !ok {
+		return fmt.Errorf("host %s not found", id)
+	}
+	rec := &pwRecorder{app: a, hostID: id, hostName: h.Name, addr: h.Addr}
+	err = a.mgr.ChangePasswords(id, newPassword, rec)
+	// Sync the stored login credential to what actually landed (the new password
+	// on success, or the last account state reached on a mid-way failure).
+	a.reconcileLoginPassword(id, h.User)
+	a.refreshPwStatus(id)
+	return err
+}
+
+// PwLedger returns the rotation history, newest first. Empty hostID = all hosts.
+func (a *App) PwLedger(hostID string) ([]pwledger.Entry, error) {
+	if a.led == nil {
+		return nil, fmt.Errorf("ledger unavailable")
+	}
+	return a.led.Entries(hostID)
+}
+
+// PwConfig returns the password-manager config (temp password, warn-days).
+func (a *App) PwConfig() (pwledger.Config, error) {
+	if a.led == nil {
+		return pwledger.Config{TempPassword: pwledger.DefaultTempPassword, ExpiryWarnDays: pwledger.DefaultWarnDays}, nil
+	}
+	return a.led.Config()
+}
+
+// SetPwConfig updates the password-manager config.
+func (a *App) SetPwConfig(c pwledger.Config) error {
+	if a.led == nil {
+		return fmt.Errorf("ledger unavailable")
+	}
+	return a.led.SetConfig(c)
+}
+
 // ConnectMany dials, probes and starts streaming for several hosts concurrently
 // (9 sequential SSH dials would be slow). Each host reuses the same per-host
 // session machinery as Connect; frames/status arrive via the usual events.
@@ -192,6 +346,7 @@ func (a *App) ConnectMany(ids []string, intervalSec int) []ClusterConnectResult 
 				r.Err = err.Error()
 			} else {
 				r.Caps = caps
+				go a.refreshPwStatus(id)
 			}
 			results[i] = r
 		}(i, id)
@@ -224,6 +379,13 @@ func (a *App) NethogsInstall(id string) error {
 // installed nethogs, undo the dnf transaction to restore prior dependencies.
 func (a *App) NethogsRollback(id string) error {
 	return a.mgr.RollbackNethogs(id)
+}
+
+// KillProcess ends a process on the connected host. force=true sends SIGKILL
+// instead of the default graceful SIGTERM. The confirmation prompt lives in the
+// UI — by the time this is called the operator has already approved.
+func (a *App) KillProcess(hostID string, pid int, force bool) error {
+	return a.mgr.KillProcess(hostID, pid, force)
 }
 
 // ProcessHistory returns the in-memory 1s timeline for one process (detail view).

@@ -153,6 +153,11 @@ export default function ProcTable({
             return (
               <tr
                 key={p.pid}
+                // data-pid/data-name let App's document-level (capture-phase)
+                // contextmenu handler resolve the row reliably — Wails production
+                // builds can swallow React's synthetic onContextMenu on rows.
+                data-pid={p.pid}
+                data-name={p.name}
                 className={selectedPid === p.pid ? "sel" : ""}
                 onClick={() => onSelect(p.pid)}
                 onDoubleClick={() => onOpen(p.pid)}

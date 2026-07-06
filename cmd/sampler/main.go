@@ -83,6 +83,7 @@ type proc struct {
 	DiskR   int64   `json:"diskR"`   // bytes/s read (-1 if /proc/pid/io denied)
 	DiskW   int64   `json:"diskW"`   // bytes/s written (-1 if denied)
 	Threads int     `json:"threads"`
+	Start   int64   `json:"start"` // process start, unix seconds (0 if unknown)
 }
 
 // prevProc holds last-tick counters needed to compute deltas.
@@ -157,6 +158,7 @@ func main() {
 	pageSize := int64(os.Getpagesize())
 	users := loadUsers()
 	clkTck := int64(100) // USER_HZ; 100 on every mainstream Linux
+	btime := readBtime() // system boot, unix seconds; for absolute process start times
 
 	prev := map[int]prevProc{}
 	var prevTotal uint64
@@ -312,6 +314,10 @@ func main() {
 				}
 			}
 
+			var startUnix int64
+			if btime > 0 && st.startTicks > 0 {
+				startUnix = btime + int64(st.startTicks)/clkTck
+			}
 			f.Procs = append(f.Procs, proc{
 				PID:     pid,
 				PPID:    st.ppid,
@@ -325,13 +331,13 @@ func main() {
 				DiskR:   dR,
 				DiskW:   dW,
 				Threads: st.threads,
+				Start:   startUnix,
 			})
 			newPrev[pid] = prevProc{cpuJiffies: st.cpuJiffies, readBytes: rd, writeBytes: wr}
 		}
 		f.CPU = round2(cpuSum)
 		prev = newPrev
 		prevTotal = curTotal
-		_ = clkTck
 
 		writeJSON(out, f)
 		out.Flush()
@@ -359,6 +365,7 @@ type statInfo struct {
 	cpuJiffies uint64
 	rssPages   int64
 	threads    int
+	startTicks uint64 // /proc/pid/stat field 22: process start in clock ticks since boot
 }
 
 func readStat(pid int) (statInfo, bool) {
@@ -382,6 +389,7 @@ func readStat(pid int) (statInfo, bool) {
 	stime, _ := strconv.ParseUint(fields[12], 10, 64)
 	ppid, _ := strconv.Atoi(fields[1])
 	threads, _ := strconv.Atoi(fields[17])
+	start, _ := strconv.ParseUint(fields[19], 10, 64) // field 22 (starttime)
 	rss, _ := strconv.ParseInt(fields[21], 10, 64)
 	return statInfo{
 		comm:       comm,
@@ -390,6 +398,7 @@ func readStat(pid int) (statInfo, bool) {
 		cpuJiffies: utime + stime,
 		rssPages:   rss,
 		threads:    threads,
+		startTicks: start,
 	}, true
 }
 
@@ -494,6 +503,23 @@ func readTotalJiffies() uint64 {
 		total += v
 	}
 	return total
+}
+
+// readBtime returns the system boot time as unix seconds, from the "btime" line
+// of /proc/stat. Combined with a process's starttime (ticks since boot) it gives
+// an absolute start timestamp. Returns 0 if unavailable.
+func readBtime() int64 {
+	b, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(line, "btime ") {
+			v, _ := strconv.ParseInt(strings.TrimSpace(line[6:]), 10, 64)
+			return v
+		}
+	}
+	return 0
 }
 
 func countCPUs() int {
@@ -863,9 +889,9 @@ func writeJSON(w *bufio.Writer, f frame) {
 		if i > 0 {
 			w.WriteByte(',')
 		}
-		fmt.Fprintf(w, `{"pid":%d,"ppid":%d,"name":%s,"user":%s,"service":%s,"state":%s,"cpu":%s,"memPct":%s,"rssKiB":%d,"diskR":%d,"diskW":%d,"threads":%d}`,
+		fmt.Fprintf(w, `{"pid":%d,"ppid":%d,"name":%s,"user":%s,"service":%s,"state":%s,"cpu":%s,"memPct":%s,"rssKiB":%d,"diskR":%d,"diskW":%d,"threads":%d,"start":%d}`,
 			p.PID, p.PPID, jstr(p.Name), jstr(p.User), jstr(p.Service), jstr(p.State),
-			ftoa(p.CPU), ftoa(p.MemPct), p.RSSKiB, p.DiskR, p.DiskW, p.Threads)
+			ftoa(p.CPU), ftoa(p.MemPct), p.RSSKiB, p.DiskR, p.DiskW, p.Threads, p.Start)
 	}
 	w.WriteString("]}\n")
 }

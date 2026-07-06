@@ -102,6 +102,7 @@ type Proc struct {
 	DiskW   int64   `json:"diskW"`
 	Net     int64   `json:"net"`
 	Threads int     `json:"threads"`
+	Start   int64   `json:"start"` // process start, unix seconds (0 if unknown)
 }
 
 // Frame mirrors one whole-machine snapshot emitted by cmd/sampler, plus the
@@ -476,6 +477,38 @@ func (m *Manager) StopAll() {
 	for _, id := range ids {
 		m.Stop(id)
 	}
+}
+
+// KillProcess sends a termination signal to one process on a connected host.
+// force selects SIGKILL (-9, uncatchable) over the default graceful SIGTERM
+// (-15). PIDs <= 1 are refused as a guardrail (0 = kernel, 1 = init/systemd — a
+// stray kill there takes the box down). The PID arrives as a validated int from
+// the Wails binding, so it is formatted with %d and carries no shell-injection
+// surface. Elevation follows the session: sudoRun wraps in sudo when we logged
+// in as a non-root user with working sudo, and runs the bare kill otherwise —
+// so an unprivileged session can still end its own processes and gets a clear
+// "Operation not permitted" for others'.
+func (m *Manager) KillProcess(hostID string, pid int, force bool) error {
+	s := m.get(hostID)
+	if s == nil {
+		return fmt.Errorf("호스트가 연결되어 있지 않습니다")
+	}
+	if pid <= 1 {
+		return fmt.Errorf("PID %d 은(는) 종료할 수 없습니다 (init/커널 보호)", pid)
+	}
+	sig := "TERM"
+	if force {
+		sig = "KILL"
+	}
+	out, err := m.sudoRun(s, fmt.Sprintf("kill -%s %d", sig, pid))
+	if err != nil {
+		detail := tailLines(out, 2)
+		if detail == "" {
+			detail = err.Error()
+		}
+		return fmt.Errorf("종료 실패: %s", detail)
+	}
+	return nil
 }
 
 // ---- nethogs: install / stream / rollback ----

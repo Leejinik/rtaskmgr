@@ -3,11 +3,15 @@ import { host } from "../../wailsjs/go/models";
 import { SaveHosts } from "../../wailsjs/go/main/App";
 
 interface Props {
-  onSaved: (saved: host.Host[], connect: boolean) => void;
+  // When set, the dialog edits an existing cluster (pre-filled) and upserts its
+  // hosts by id; onSaved's caller deletes any members removed during the edit.
+  editing?: { id: string; name: string; hosts: host.Host[] };
+  onSaved: (saved: host.Host[], connect: boolean, clusterId?: string) => void;
   onClose: () => void;
 }
 
 interface Row {
+  id?: string; // set for existing hosts being edited (upsert), empty for new rows
   addr: string;
   port: number;
   name: string;
@@ -18,16 +22,35 @@ interface Row {
 
 const emptyRow = (): Row => ({ addr: "", port: 22, name: "", user: "", password: "", keyPath: "" });
 
-// ClusterDialog registers several hosts at once as one named cluster. By default
-// every server shares one SSH account/password; ticking "서버별로 다름" reveals
-// per-row credential fields. IP/port rows can be added/removed dynamically.
-export default function ClusterDialog({ onSaved, onClose }: Props) {
-  const [clusterName, setClusterName] = useState("");
-  const [perServer, setPerServer] = useState(false);
-  const [commonUser, setCommonUser] = useState("");
-  const [commonPassword, setCommonPassword] = useState("");
-  const [commonKeyPath, setCommonKeyPath] = useState("");
-  const [rows, setRows] = useState<Row[]>([emptyRow(), emptyRow(), emptyRow()]);
+// deriveInit turns an editing cluster's hosts into the dialog's initial state.
+// Common-credential mode is used when every member shares user/password/keyPath.
+function deriveInit(hosts: host.Host[]) {
+  const rows: Row[] = hosts.map((h) => ({
+    id: h.id, addr: h.addr, port: h.port || 22, name: h.name,
+    user: h.user, password: h.password, keyPath: h.keyPath,
+  }));
+  const same = (f: (h: host.Host) => string) => hosts.every((h) => f(h) === f(hosts[0]));
+  const common = hosts.length > 0 && same((h) => h.user) && same((h) => h.password) && same((h) => h.keyPath);
+  return {
+    rows,
+    perServer: !common,
+    commonUser: common ? hosts[0].user : "",
+    commonPassword: common ? hosts[0].password : "",
+    commonKeyPath: common ? hosts[0].keyPath : "",
+  };
+}
+
+// ClusterDialog registers (or edits) several hosts at once as one named cluster.
+// By default every server shares one SSH account/password; ticking "서버별로 다름"
+// reveals per-row credential fields. IP/port rows can be added/removed dynamically.
+export default function ClusterDialog({ editing, onSaved, onClose }: Props) {
+  const init = editing ? deriveInit(editing.hosts) : null;
+  const [clusterName, setClusterName] = useState(editing?.name ?? "");
+  const [perServer, setPerServer] = useState(init?.perServer ?? false);
+  const [commonUser, setCommonUser] = useState(init?.commonUser ?? "");
+  const [commonPassword, setCommonPassword] = useState(init?.commonPassword ?? "");
+  const [commonKeyPath, setCommonKeyPath] = useState(init?.commonKeyPath ?? "");
+  const [rows, setRows] = useState<Row[]>(init?.rows ?? [emptyRow(), emptyRow(), emptyRow()]);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -71,9 +94,10 @@ export default function ClusterDialog({ onSaved, onClose }: Props) {
     setBusy(true);
     setErr("");
     try {
-      const clusterId = crypto.randomUUID();
+      const clusterId = editing?.id ?? crypto.randomUUID();
       const list = filled.map((r, i) =>
         host.Host.createFrom({
+          id: r.id ?? "", // preserve id → upsert existing member; empty → new host
           name: r.name.trim() || `${name}-${i + 1}`,
           addr: r.addr.trim(),
           port: Number(r.port) || 22,
@@ -85,7 +109,7 @@ export default function ClusterDialog({ onSaved, onClose }: Props) {
         })
       );
       const saved = await SaveHosts(list);
-      onSaved(saved ?? [], connect);
+      onSaved(saved ?? [], connect, clusterId);
     } catch (e: any) {
       setErr(String(e));
       setBusy(false);
@@ -95,7 +119,7 @@ export default function ClusterDialog({ onSaved, onClose }: Props) {
   return (
     <div className="scrim" onMouseDown={onClose}>
       <div className="modal" onMouseDown={(e) => e.stopPropagation()} style={{ minWidth: 560 }}>
-        <h2>클러스터 추가</h2>
+        <h2>{editing ? "클러스터 편집" : "클러스터 추가"}</h2>
 
         <label>클러스터 이름</label>
         <input type="text" value={clusterName} placeholder="예: prod-collector"

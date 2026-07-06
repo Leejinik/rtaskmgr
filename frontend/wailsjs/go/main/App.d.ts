@@ -4,6 +4,9 @@ import {monitor} from '../models';
 import {main} from '../models';
 import {host} from '../models';
 import {record} from '../models';
+import {pwledger} from '../models';
+
+export function ChangePasswords(arg1:string,arg2:string):Promise<void>;
 
 export function Connect(arg1:string,arg2:number):Promise<monitor.Capabilities>;
 
@@ -23,6 +26,8 @@ export function EstimateScheduled(arg1:string):Promise<monitor.RecEstimate>;
 
 export function IsRecording():Promise<boolean>;
 
+export function KillProcess(arg1:string,arg2:number,arg3:boolean):Promise<void>;
+
 export function ListHosts():Promise<Array<host.Host>>;
 
 export function ListScheduled(arg1:string):Promise<Array<monitor.RecMeta>>;
@@ -35,13 +40,23 @@ export function NethogsRollback(arg1:string):Promise<void>;
 
 export function OpenLogDialog():Promise<main.LogMeta>;
 
+export function PasswordStatus(arg1:string):Promise<monitor.PwStatus>;
+
 export function ProcessHistory(arg1:string,arg2:number):Promise<Array<record.Point>>;
+
+export function PwConfig():Promise<pwledger.Config>;
+
+export function PwLedger(arg1:string):Promise<Array<pwledger.Entry>>;
+
+export function RenewPasswords(arg1:string):Promise<void>;
 
 export function SaveHost(arg1:host.Host):Promise<host.Host>;
 
 export function SaveHosts(arg1:Array<host.Host>):Promise<Array<host.Host>>;
 
 export function SetInterval(arg1:string,arg2:number):Promise<void>;
+
+export function SetPwConfig(arg1:pwledger.Config):Promise<void>;
 
 export function StartRecording(arg1:string):Promise<string>;
 

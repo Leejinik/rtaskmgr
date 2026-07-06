@@ -15,6 +15,7 @@ export interface Proc {
   diskW: number;
   net: number; // bytes/s, -1 = N/A (no nethogs)
   threads: number;
+  start: number; // process start, unix seconds (0 if unknown)
 }
 
 export interface NetStat {

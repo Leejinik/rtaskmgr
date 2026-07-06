@@ -47,6 +47,22 @@ export function fmtClock(ms: number): string {
   );
 }
 
+// fmtUptime turns a duration in seconds into a compact human string
+// (e.g. "45초", "12분 3초", "3시간 8분", "2일 5시간"). Shows the two largest
+// non-zero units so a just-started process reads clearly as seconds.
+export function fmtUptime(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return "—";
+  const s = Math.floor(sec);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  if (d > 0) return `${d}일 ${h}시간`;
+  if (h > 0) return `${h}시간 ${m}분`;
+  if (m > 0) return `${m}분 ${ss}초`;
+  return `${ss}초`;
+}
+
 // heat returns a 0..1 intensity for the cell background bar.
 export function heat(v: number, max: number): number {
   if (v <= 0 || max <= 0) return 0;

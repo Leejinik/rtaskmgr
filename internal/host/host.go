@@ -37,6 +37,14 @@ type Host struct {
 	// connected/disconnected together and viewed on the cluster overview.
 	ClusterID   string `json:"clusterId,omitempty"`
 	ClusterName string `json:"clusterName,omitempty"`
+
+	// Password-expiry cache for the managed accounts (liz/root), refreshed on
+	// connect so the sidebar/hover can show expiry without a live session.
+	// Values are the expiry day as a Unix day number (days since 1970-01-01):
+	// 0 = unknown/never-checked, -1 = never expires.
+	LizExpDays  int64     `json:"lizExpDays,omitempty"`
+	RootExpDays int64     `json:"rootExpDays,omitempty"`
+	PwCheckedAt time.Time `json:"pwCheckedAt,omitempty"`
 }
 
 func (h Host) port() int {
@@ -160,6 +168,45 @@ func (s *Store) Save(h Host) (Host, error) {
 		return h, err
 	}
 	return h, nil
+}
+
+// UpdateExpiry writes just the password-expiry cache for one host, leaving every
+// other field (and UpdatedAt) untouched. No-op if the host is gone.
+func (s *Store) UpdateExpiry(id string, lizExpDays, rootExpDays int64, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, err := s.load()
+	if err != nil {
+		return err
+	}
+	for i := range f.Hosts {
+		if f.Hosts[i].ID == id {
+			f.Hosts[i].LizExpDays = lizExpDays
+			f.Hosts[i].RootExpDays = rootExpDays
+			f.Hosts[i].PwCheckedAt = at
+			return s.persist(f)
+		}
+	}
+	return nil
+}
+
+// UpdatePassword sets the login password for one host (used after a rotation
+// changes it), leaving other fields untouched. No-op if the host is gone.
+func (s *Store) UpdatePassword(id, password string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, err := s.load()
+	if err != nil {
+		return err
+	}
+	for i := range f.Hosts {
+		if f.Hosts[i].ID == id {
+			f.Hosts[i].Password = password
+			f.Hosts[i].UpdatedAt = time.Now().UTC()
+			return s.persist(f)
+		}
+	}
+	return nil
 }
 
 func (s *Store) Delete(id string) error {

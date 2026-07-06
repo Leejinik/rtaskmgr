@@ -14,6 +14,10 @@ export namespace host {
 	    updatedAt: any;
 	    clusterId?: string;
 	    clusterName?: string;
+	    lizExpDays?: number;
+	    rootExpDays?: number;
+	    // Go type: time
+	    pwCheckedAt?: any;
 	
 	    static createFrom(source: any = {}) {
 	        return new Host(source);
@@ -32,6 +36,9 @@ export namespace host {
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
 	        this.clusterId = source["clusterId"];
 	        this.clusterName = source["clusterName"];
+	        this.lizExpDays = source["lizExpDays"];
+	        this.rootExpDays = source["rootExpDays"];
+	        this.pwCheckedAt = this.convertValues(source["pwCheckedAt"], null);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -216,6 +223,7 @@ export namespace monitor {
 	    diskW: number;
 	    net: number;
 	    threads: number;
+	    start: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Proc(source);
@@ -236,6 +244,7 @@ export namespace monitor {
 	        this.diskW = source["diskW"];
 	        this.net = source["net"];
 	        this.threads = source["threads"];
+	        this.start = source["start"];
 	    }
 	}
 	export class NetStat {
@@ -316,6 +325,26 @@ export namespace monitor {
 	}
 	
 	
+	export class PwStatus {
+	    hasLiz: boolean;
+	    hasRoot: boolean;
+	    lizExpDays: number;
+	    rootExpDays: number;
+	    todayDays: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PwStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hasLiz = source["hasLiz"];
+	        this.hasRoot = source["hasRoot"];
+	        this.lizExpDays = source["lizExpDays"];
+	        this.rootExpDays = source["rootExpDays"];
+	        this.todayDays = source["todayDays"];
+	    }
+	}
 	export class RecTarget {
 	    path: string;
 	    mount: string;
@@ -407,6 +436,76 @@ export namespace monitor {
 	        this.status = source["status"];
 	        this.sizeBytes = source["sizeBytes"];
 	    }
+	}
+
+}
+
+export namespace pwledger {
+	
+	export class Config {
+	    tempPassword: string;
+	    expiryWarnDays: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Config(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tempPassword = source["tempPassword"];
+	        this.expiryWarnDays = source["expiryWarnDays"];
+	    }
+	}
+	export class Entry {
+	    id: string;
+	    hostId: string;
+	    hostName: string;
+	    addr: string;
+	    account: string;
+	    op: string;
+	    step: string;
+	    password: string;
+	    status: string;
+	    err?: string;
+	    // Go type: time
+	    at: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new Entry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.hostId = source["hostId"];
+	        this.hostName = source["hostName"];
+	        this.addr = source["addr"];
+	        this.account = source["account"];
+	        this.op = source["op"];
+	        this.step = source["step"];
+	        this.password = source["password"];
+	        this.status = source["status"];
+	        this.err = source["err"];
+	        this.at = this.convertValues(source["at"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }
