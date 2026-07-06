@@ -1125,8 +1125,8 @@ export default function App() {
         return (
           <ConfirmDialog
             title="🔑 패스워드 만료 임박"
-            confirmLabel="갱신 (Y)"
-            cancelLabel="무시 (N)"
+            confirmLabel="갱신"
+            cancelLabel="무시"
             message={
               <>
                 <div style={{ fontWeight: 600, marginBottom: 8 }}>{pwAlert.name}</div>
