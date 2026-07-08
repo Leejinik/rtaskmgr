@@ -614,17 +614,20 @@ func (m *Manager) startNethogs(s *session, hostID string) error {
 		return err
 	}
 
-	// Watchdog wrapper: nethogs is killed the instant this SSH channel's stdin
-	// reaches EOF — which happens on a clean stop (we close the pipe below) AND on
-	// app crash / network drop (sshd closes the channel). Running the wrapper under
-	// sudo lets it kill the root-owned nethogs by PID. We deliberately do NOT rely
-	// on ssh Signal(SIGTERM): OpenSSH's sshd ignores signal requests on exec
-	// channels, which previously left nethogs running (reparented to PID 1) after
-	// disconnects — pegging CPU/memory for days.
-	inner := "nethogs -t -d 1 & np=$!; while read _x; do :; done; kill -TERM $np 2>/dev/null; wait $np 2>/dev/null"
-	cmd := "sh -c " + shellQuote(inner)
+	// Watchdog wrapper with a heartbeat dead-man's switch. The client writes a
+	// newline at least every 10s (see the writer goroutine below); `read -t 30`
+	// exits the loop when that heartbeat stops for 30s. So nethogs is killed on:
+	//   - clean stop (we close the pipe → immediate EOF), and
+	//   - ANY silent client death — crash-without-FIN, freeze, network drop — even
+	//     if the server never closes the channel.
+	// This deliberately does NOT depend on the SSH channel closing: OpenSSH's sshd
+	// ignores Signal(SIGTERM) on exec channels, and a host with ClientAliveInterval
+	// 0 never reaps a vanished client — both previously left nethogs reparented to
+	// PID 1, pegging CPU/memory for days. `read -t` needs bash (not dash).
+	inner := "nethogs -t -d 1 & np=$!; while read -t 30 _x; do :; done; kill -TERM $np 2>/dev/null; wait $np 2>/dev/null"
+	cmd := "bash -c " + shellQuote(inner)
 	if s.useSudo {
-		cmd = "sudo -S -p '' sh -c " + shellQuote(inner)
+		cmd = "sudo -S -p '' bash -c " + shellQuote(inner)
 	}
 
 	pr, pw := io.Pipe()
@@ -642,19 +645,35 @@ func (m *Manager) startNethogs(s *session, hostID string) error {
 		sess.Close()
 		return err
 	}
-	if s.useSudo {
-		// Feed the sudo password, then keep the pipe open so the remote read loop
-		// blocks until we (or a dropped connection) close its stdin.
-		go func() { _, _ = io.WriteString(pw, s.password+"\n") }()
-	}
 	s.nhCancel = ncancel
 	s.setActive(true)
 	s.setNet(map[int]int64{})
 
+	// One writer drives both the sudo password (first line) and the heartbeat.
+	// On a clean stop (nctx cancelled) we close the pipe for an immediate EOF kill;
+	// otherwise a newline every 10s keeps the remote `read -t 30` alive. If this
+	// process dies or freezes, the heartbeats stop and the remote watchdog
+	// self-terminates within 30s regardless of connection/sshd state.
 	go func() {
-		<-nctx.Done()
-		_ = pw.Close() // EOF → remote watchdog kills nethogs by PID
-		sess.Close()
+		if s.useSudo {
+			if _, err := io.WriteString(pw, s.password+"\n"); err != nil {
+				return
+			}
+		}
+		t := time.NewTicker(10 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-nctx.Done():
+				_ = pw.Close() // EOF → remote watchdog kills nethogs by PID
+				sess.Close()
+				return
+			case <-t.C:
+				if _, err := io.WriteString(pw, "\n"); err != nil {
+					return
+				}
+			}
+		}
 	}()
 	go func() {
 		defer s.setActive(false)
