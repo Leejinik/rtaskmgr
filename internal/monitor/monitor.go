@@ -511,6 +511,50 @@ func (m *Manager) KillProcess(hostID string, pid int, force bool) error {
 	return nil
 }
 
+// validUnit allows only characters that appear in real systemd unit names, so an
+// attacker-influenced /proc/<pid>/cgroup value can never inject shell syntax into
+// the systemctl command.
+func validUnit(u string) bool {
+	if u == "" || len(u) > 128 {
+		return false
+	}
+	for _, r := range u {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
+			r == '@' || r == '.' || r == '_' || r == ':' || r == '-'
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// ServiceAction runs `systemctl <action> <unit>` on the connected host for a
+// process that belongs to a systemd unit. action is "stop" or "restart". Only
+// .service units are accepted: a stray stop on a .scope/.slice could tear down a
+// login session (including our own SSH). The confirmation prompt lives in the UI.
+func (m *Manager) ServiceAction(hostID, unit, action string) error {
+	s := m.get(hostID)
+	if s == nil {
+		return fmt.Errorf("호스트가 연결되어 있지 않습니다")
+	}
+	unit = strings.TrimSpace(unit)
+	if !validUnit(unit) || !strings.HasSuffix(unit, ".service") {
+		return fmt.Errorf("서비스(.service) 유닛이 아닙니다: %q", unit)
+	}
+	if action != "stop" && action != "restart" {
+		return fmt.Errorf("허용되지 않는 동작입니다: %q", action)
+	}
+	out, err := m.sudoRun(s, fmt.Sprintf("systemctl %s %s", action, unit))
+	if err != nil {
+		detail := tailLines(out, 3)
+		if detail == "" {
+			detail = err.Error()
+		}
+		return fmt.Errorf("서비스 %s 실패: %s", action, detail)
+	}
+	return nil
+}
+
 // ---- nethogs: install / stream / rollback ----
 
 // InstallNethogs makes the per-process network column live for one host. If

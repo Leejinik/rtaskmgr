@@ -7,11 +7,13 @@ import {
   NethogsInstall, NethogsRollback,
   OpenLogDialog, LogFrames,
   KillProcess,
+  ServiceAction,
   PwConfig, RenewPasswords,
+  AutoUpdate, ApplyUpdate, GetPendingReleaseNotes, MarkReleaseNotesSeen,
 } from "../wailsjs/go/main/App";
 
 const REFRESH_OPTS = [1, 2, 3, 5, 10, 15, 20, 30, 60];
-import { host, main } from "../wailsjs/go/models";
+import { host, main, updater } from "../wailsjs/go/models";
 import { Frame, HostStatus, Capabilities, SortKey, SortSpec, MAX_SORT, SysSample } from "./types";
 import ProcTable from "./components/ProcTable";
 import PerformanceView from "./components/PerformanceView";
@@ -38,6 +40,10 @@ interface Playback {
 
 const basename = (p: string) => p.split(/[\\/]/).pop() || p;
 import "./taskmgr.css";
+
+// Module-level guard so the silent startup auto-update runs exactly once even
+// if React StrictMode double-invokes the mount effect in dev.
+let autoApplyFired = false;
 
 export default function App() {
   const [hosts, setHosts] = useState<host.Host[]>([]);
@@ -77,8 +83,9 @@ export default function App() {
   // Right-click-on-process menu and the terminate confirmation it opens. hostId
   // is pinned to the row that was clicked (single-host OR a cluster column), so
   // the kill never resolves the target from whatever happens to be "selected".
-  const [procCtx, setProcCtx] = useState<{ x: number; y: number; pid: number; name: string; hostId: string } | null>(null);
+  const [procCtx, setProcCtx] = useState<{ x: number; y: number; pid: number; name: string; hostId: string; service: string } | null>(null);
   const [killConfirm, setKillConfirm] = useState<{ pid: number; name: string; force: boolean; hostId: string } | null>(null);
+  const [svcConfirm, setSvcConfirm] = useState<{ unit: string; name: string; action: "stop" | "restart"; hostId: string } | null>(null);
   // When set, the main area shows the cluster overview dashboard instead of a
   // single host. Selecting a host (row or overview card) clears it.
   const [overviewClusterId, setOverviewClusterId] = useState<string | null>(null);
@@ -107,6 +114,12 @@ export default function App() {
     () => Number(localStorage.getItem("rtm.interval")) || 10
   );
   const [toast, setToast] = useState("");
+
+  // Auto-updater UI: a persistent manual-update pill (shown when the silent path
+  // is blocked by the loop guard) and a one-shot release-notes popup carried
+  // over from the version that just updated.
+  const [manualUpdate, setManualUpdate] = useState<updater.UpdateInfo | null>(null);
+  const [releaseNotes, setReleaseNotes] = useState<{ version: string; notes: string } | null>(null);
 
   const toastTimer = useRef<number | null>(null);
   const showToast = (m: string) => {
@@ -160,8 +173,56 @@ export default function App() {
     }
   }
 
+  async function doService(t: { hostId: string; unit: string; name: string; action: "stop" | "restart" }) {
+    if (!t.hostId || !t.unit) return;
+    try {
+      await ServiceAction(t.hostId, t.unit, t.action);
+      showToast(`${t.unit} ${t.action === "restart" ? "재시작" : "정지"} 완료`);
+    } catch (e: any) {
+      showToast(typeof e === "string" ? e : e?.message ?? "서비스 동작 실패");
+    }
+  }
+
   useEffect(() => { void refreshHosts(); }, []);
   useEffect(() => { PwConfig().then((c) => setPwWarnDays(c.expiryWarnDays || 10)).catch(() => {}); }, []);
+
+  // ---- Auto-update (silent startup path, run once) ----
+  useEffect(() => {
+    if (autoApplyFired) return;
+    autoApplyFired = true;
+    (async () => {
+      // Pop the release notes stashed by the version that just updated (once).
+      try {
+        const notes = await GetPendingReleaseNotes();
+        if (notes?.version) setReleaseNotes({ version: notes.version, notes: notes.notes ?? "" });
+      } catch { /* ignore */ }
+      // Guarded silent update. Applying → app quits & relaunches shortly.
+      // Blocked (guard tripped) → offer a manual-update pill instead of looping.
+      try {
+        const r = await AutoUpdate();
+        if (r?.applying) {
+          showToast("업데이트 적용 중… " + (r.info?.latestVersion ?? ""));
+        } else if (r?.blocked && r.info) {
+          setManualUpdate(r.info);
+        }
+      } catch { /* ignore */ }
+    })();
+  }, []);
+
+  const dismissReleaseNotes = () => {
+    setReleaseNotes(null);
+    MarkReleaseNotesSeen().catch(() => {});
+  };
+
+  const applyManualUpdate = async () => {
+    if (!manualUpdate) return;
+    try {
+      showToast("업데이트 적용 중… " + (manualUpdate.latestVersion ?? ""));
+      await ApplyUpdate(manualUpdate);
+    } catch (e: any) {
+      showToast(typeof e === "string" ? e : e?.message ?? "업데이트 적용 실패");
+    }
+  };
 
   // ---- backend events ----
   useEffect(() => {
@@ -508,7 +569,7 @@ export default function App() {
   // under the cursor between the right-click and pressing "종료" — otherwise the
   // user aims at one process and signals another. doKill still validates against
   // the LIVE frame, so a PID that truly exited/changed is caught regardless.
-  const tableFrozen = procCtx !== null || killConfirm !== null;
+  const tableFrozen = procCtx !== null || killConfirm !== null || svcConfirm !== null;
   const frozenFrame = useRef<Frame | undefined>(undefined);
   if (!tableFrozen) frozenFrame.current = undefined;
   else if (frozenFrame.current === undefined) frozenFrame.current = frame;
@@ -537,8 +598,9 @@ export default function App() {
       e.preventDefault();
       e.stopPropagation(); // we own this event; don't let ContextMenu's close fire
       const name = tr.dataset.name || String(pid);
+      const service = tr.dataset.service || "";
       setSelectedPid(pid);
-      setProcCtx({ x: e.clientX, y: e.clientY, pid, name, hostId });
+      setProcCtx({ x: e.clientX, y: e.clientY, pid, name, hostId, service });
     };
     document.addEventListener("contextmenu", onCtx, true);
     return () => document.removeEventListener("contextmenu", onCtx, true);
@@ -743,6 +805,17 @@ export default function App() {
           )}
         </div>
         <div className="sidebar-footer">
+          {manualUpdate && (
+            <button className="toolbtn"
+              style={{
+                width: "100%", marginBottom: 6,
+                background: "#2f6f3f", borderColor: "#3c9553", color: "#fff",
+              }}
+              onClick={applyManualUpdate}
+              title="새 버전을 지금 내려받아 적용합니다">
+              ⬆️ 새 버전 {manualUpdate.latestVersion} (수동 업데이트)
+            </button>
+          )}
           <button className="toolbtn" style={{ width: "100%", marginBottom: 6 }}
             onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
             title="다크/라이트 테마 전환">
@@ -768,7 +841,7 @@ export default function App() {
           onConnectAll={() => connectCluster(overviewCluster.hosts.map((h) => h.id))}
           onDisconnectAll={() => disconnectCluster(overviewCluster.hosts.map((h) => h.id))}
           onChangeInterval={changeInterval}
-          onProcMenu={(hostId, pid, name, x, y) => setProcCtx({ x, y, pid, name, hostId })}
+          onProcMenu={(hostId, pid, name, service, x, y) => setProcCtx({ x, y, pid, name, hostId, service })}
         />
       ) : (
       <main className="main">
@@ -1047,6 +1120,19 @@ export default function App() {
               danger: true,
               onClick: () => setKillConfirm({ pid: procCtx.pid, name: procCtx.name, force: true, hostId: procCtx.hostId }),
             },
+            ...(procCtx.service && procCtx.service.endsWith(".service")
+              ? [
+                  {
+                    label: `서비스 재시작 (${procCtx.service})`,
+                    onClick: () => setSvcConfirm({ unit: procCtx.service, name: procCtx.name, action: "restart", hostId: procCtx.hostId }),
+                  },
+                  {
+                    label: `서비스 정지 (${procCtx.service})`,
+                    danger: true,
+                    onClick: () => setSvcConfirm({ unit: procCtx.service, name: procCtx.name, action: "stop", hostId: procCtx.hostId }),
+                  },
+                ]
+              : []),
           ]}
           onClose={() => setProcCtx(null)}
         />
@@ -1097,6 +1183,33 @@ export default function App() {
         />
         );
       })()}
+
+      {svcConfirm && (
+        <ConfirmDialog
+          title={svcConfirm.action === "restart" ? "서비스 재시작" : "서비스 정지"}
+          danger
+          confirmLabel={svcConfirm.action === "restart" ? "재시작" : "정지"}
+          message={
+            <>
+              {svcConfirm.action === "restart" ? "이 서비스를 재시작하시겠습니까?" : "이 서비스를 정지하시겠습니까?"}
+              <div style={{ marginTop: 10, fontWeight: 600 }}>{svcConfirm.unit}</div>
+              <div style={{ marginTop: 6, fontSize: 12.5, color: "var(--text-mute)" }}>
+                {svcConfirm.name} · systemctl {svcConfirm.action} {svcConfirm.unit}
+              </div>
+              <div style={{ marginTop: 8, fontSize: 12.5, color: "var(--text-mute)" }}>
+                {svcConfirm.action === "stop"
+                  ? "이 서비스(관련 프로세스 전체)가 중지됩니다."
+                  : "서비스가 잠시 중단됐다가 다시 시작됩니다."}
+              </div>
+            </>
+          }
+          onCancel={() => setSvcConfirm(null)}
+          onConfirm={() => {
+            void doService(svcConfirm);
+            setSvcConfirm(null);
+          }}
+        />
+      )}
 
       {detailPid != null && selectedId && (
         <DetailModal
@@ -1152,6 +1265,42 @@ export default function App() {
       })()}
 
       {toast && <div className="toast">{toast}</div>}
+
+      {releaseNotes && (
+        <div
+          onClick={dismissReleaseNotes}
+          style={{
+            position: "fixed", inset: 0, zIndex: 1000,
+            background: "rgba(0,0,0,0.5)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "min(560px, 90vw)", maxHeight: "80vh", overflow: "auto",
+              background: "var(--panel, #262626)", color: "var(--fg, #eee)",
+              border: "1px solid #444", borderRadius: 8, padding: "18px 20px",
+              boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
+            }}
+          >
+            <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 10 }}>
+              🎉 rtaskmgr {releaseNotes.version} 업데이트됨
+            </div>
+            <pre style={{
+              whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0,
+              fontFamily: "inherit", fontSize: 13, lineHeight: 1.5,
+            }}>
+              {releaseNotes.notes || "이 버전의 릴리스 노트가 없습니다."}
+            </pre>
+            <div style={{ textAlign: "right", marginTop: 16 }}>
+              <button className="toolbtn primary" onClick={dismissReleaseNotes}>
+                확인
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

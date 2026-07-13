@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"rtaskmgr/internal/monitor"
 	"rtaskmgr/internal/pwledger"
 	"rtaskmgr/internal/record"
+	"rtaskmgr/internal/updater"
 )
 
 type App struct {
@@ -26,6 +28,11 @@ type App struct {
 	rec   *record.Recorder
 	led   *pwledger.Store
 	rpmFS fs.FS
+
+	// version is set from main() after NewApp(); the updater is built in
+	// startup() once the config dir is known. Empty version → "dev" → updater off.
+	version string
+	updater *updater.Updater
 
 	logMu     sync.Mutex
 	logFrames map[string][]monitor.Frame // currently opened log: hostId -> frames in order
@@ -72,6 +79,24 @@ func (a *App) startup(ctx context.Context) {
 	a.led = led
 
 	a.mgr = monitor.NewManager(a.onFrame, a.onStatus, a.onNethogs, a.rpmFS)
+
+	// Auto-updater: default a "dev" version, build from the app-specific config
+	// dir, and sweep any leftover swap files from a previous update.
+	if a.version == "" {
+		a.version = "dev"
+	}
+	home, _ := os.UserHomeDir()
+	cfgDir := filepath.Join(home, ".rtaskmgr")
+	a.updater = updater.New(updater.Config{
+		Owner:          "Leejinik",
+		Repo:           "rtaskmgr",
+		AssetName:      "rtaskmgr.exe",
+		CurrentVersion: a.version,
+		ConfigDir:      cfgDir,
+	})
+	if exe, err := os.Executable(); err == nil {
+		a.updater.CleanupLeftovers(exe)
+	}
 }
 
 // onFrame is invoked by the monitor for every 1s frame: persist it and push it
@@ -388,6 +413,12 @@ func (a *App) KillProcess(hostID string, pid int, force bool) error {
 	return a.mgr.KillProcess(hostID, pid, force)
 }
 
+// ServiceAction runs systemctl stop/restart for a process's systemd .service
+// unit. action is "stop" or "restart". The confirmation prompt lives in the UI.
+func (a *App) ServiceAction(hostID, unit, action string) error {
+	return a.mgr.ServiceAction(hostID, unit, action)
+}
+
 // ProcessHistory returns the in-memory 1s timeline for one process (detail view).
 func (a *App) ProcessHistory(hostID string, pid int) []record.Point {
 	if a.rec == nil {
@@ -584,6 +615,89 @@ func (a *App) LogFrames(hostID string) []monitor.Frame {
 	a.logMu.Lock()
 	defer a.logMu.Unlock()
 	return a.logFrames[hostID]
+}
+
+// ---- Auto-update --------------------------------------------------------
+
+// GetCurrentVersion returns the build-time version (or "dev" for local builds).
+func (a *App) GetCurrentVersion() string {
+	if a.updater == nil {
+		return a.version
+	}
+	return a.updater.CurrentVersion()
+}
+
+// CheckForUpdate queries GitHub Releases for a newer build (pure check — it
+// records no attempt and applies nothing).
+func (a *App) CheckForUpdate() (updater.UpdateInfo, error) {
+	if a.updater == nil {
+		return updater.UpdateInfo{CurrentVersion: a.version}, nil
+	}
+	return a.updater.Check(a.ctx)
+}
+
+// ApplyUpdate downloads the new exe, stashes the release notes, swaps the
+// binary in place, and quits the app so the swapped-in binary relaunches. This
+// is the manual/unguarded path (clicking the update badge).
+func (a *App) ApplyUpdate(info updater.UpdateInfo) error {
+	if a.updater == nil {
+		return errors.New("updater not initialised")
+	}
+	if err := a.updater.Apply(a.ctx, info); err != nil {
+		return err
+	}
+	// Hand off to the relaunch. Quit in a goroutine so this call can return
+	// cleanly to the frontend before the runtime shuts down.
+	go func() {
+		wruntime.Quit(a.ctx)
+	}()
+	return nil
+}
+
+// AutoUpdate is the GUARDED silent startup path. It checks for a newer build
+// and, if one is available AND the loop guard green-lights it, applies it and
+// quits so the swapped-in binary relaunches. If the guard trips (5 attempts at
+// the same target without the running version converging), it returns
+// Blocked=true so the frontend can show a manual-update badge instead of
+// looping forever.
+func (a *App) AutoUpdate() updater.AutoUpdateResult {
+	if a.updater == nil {
+		return updater.AutoUpdateResult{}
+	}
+	info, err := a.updater.Check(a.ctx)
+	if err != nil || !info.Available {
+		return updater.AutoUpdateResult{Info: info}
+	}
+	if !a.updater.ShouldAutoApply(info) {
+		return updater.AutoUpdateResult{Blocked: true, Info: info}
+	}
+	if err := a.updater.Apply(a.ctx, info); err != nil {
+		return updater.AutoUpdateResult{Blocked: true, Info: info}
+	}
+	go wruntime.Quit(a.ctx)
+	return updater.AutoUpdateResult{Applying: true, Info: info}
+}
+
+// GetPendingReleaseNotes returns release notes stashed by the previous version
+// right before it triggered the update, iff they belong to the current binary
+// version. Returns nil when there's nothing to show.
+func (a *App) GetPendingReleaseNotes() *updater.PendingNotes {
+	if a.updater == nil {
+		return nil
+	}
+	notes, ok, _ := a.updater.LoadPendingNotes()
+	if !ok {
+		return nil
+	}
+	return &notes
+}
+
+// MarkReleaseNotesSeen deletes the stashed notes file so it won't pop again.
+func (a *App) MarkReleaseNotesSeen() error {
+	if a.updater == nil {
+		return nil
+	}
+	return a.updater.ClearPendingNotes()
 }
 
 // beforeClose finalizes any active immediate recording (the file the user chose

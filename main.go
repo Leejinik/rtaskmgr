@@ -17,9 +17,14 @@ var assets embed.FS
 //go:embed all:rpms
 var rpmFS embed.FS
 
+// Version is stamped at build time via -ldflags "-X main.Version=<tag>".
+// Local/dev builds leave it as "dev", which disables the auto-updater.
+var Version = "dev"
+
 func main() {
 	// Create an instance of the app structure
 	app := NewApp(rpmFS)
+	app.version = Version
 
 	// Create application with options
 	err := wails.Run(&options.App{

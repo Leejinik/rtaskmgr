@@ -4,3 +4,7 @@ frontend/dist
 
 # stray root build artifact from `go build .`
 /rtaskmgr.exe
+
+# QA scratch harness / artifacts
+/_qa.exe
+/_qa/

@@ -20,7 +20,7 @@ interface Props {
   onDisconnectAll: () => void;
   onChangeInterval: (sec: number) => void;
   // Right-click a process row -> open the terminate menu, pinned to this host.
-  onProcMenu?: (hostId: string, pid: number, name: string, x: number, y: number) => void;
+  onProcMenu?: (hostId: string, pid: number, name: string, service: string, x: number, y: number) => void;
 }
 
 const fmtGB = (kib: number) => `${(kib / 1024 / 1024).toFixed(1)} GB`;
@@ -155,7 +155,7 @@ function ServerProcColumn({
   onSort: (k: ColKey) => void;
   onResizeStart: (k: ColKey, e: React.MouseEvent) => void;
   onColMenu: (k: ColKey, e: React.MouseEvent) => void;
-  onRowMenu?: (pid: number, name: string, e: React.MouseEvent) => void;
+  onRowMenu?: (pid: number, name: string, service: string, e: React.MouseEvent) => void;
   onOpen: () => void;
   onConnect: () => void;
 }) {
@@ -204,7 +204,7 @@ function ServerProcColumn({
                   key={p.pid}
                   onContextMenu={
                     onRowMenu
-                      ? (e) => { e.preventDefault(); e.stopPropagation(); onRowMenu(p.pid, p.name, e); }
+                      ? (e) => { e.preventDefault(); e.stopPropagation(); onRowMenu(p.pid, p.name, p.service, e); }
                       : undefined
                   }
                 >
@@ -433,7 +433,7 @@ export default function ClusterOverview({
               onSort={onSort}
               onResizeStart={startResize}
               onColMenu={(k, e) => setColMenu({ x: e.clientX, y: e.clientY, col: k })}
-              onRowMenu={onProcMenu ? (pid, name, e) => onProcMenu(h.id, pid, name, e.clientX, e.clientY) : undefined}
+              onRowMenu={onProcMenu ? (pid, name, service, e) => onProcMenu(h.id, pid, name, service, e.clientX, e.clientY) : undefined}
               onOpen={() => onOpenHost(h.id)}
               onConnect={() => onConnectOne(h.id)}
             />

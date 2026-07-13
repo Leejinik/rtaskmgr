@@ -158,6 +158,7 @@ export default function ProcTable({
                 // builds can swallow React's synthetic onContextMenu on rows.
                 data-pid={p.pid}
                 data-name={p.name}
+                data-service={p.service}
                 className={selectedPid === p.pid ? "sel" : ""}
                 onClick={() => onSelect(p.pid)}
                 onDoubleClick={() => onOpen(p.pid)}
