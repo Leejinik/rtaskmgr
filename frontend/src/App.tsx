@@ -10,6 +10,7 @@ import {
   ServiceAction,
   PwConfig, RenewPasswords,
   AutoUpdate, ApplyUpdate, GetPendingReleaseNotes, MarkReleaseNotesSeen,
+  ShowUpdateModeNoticeOnce,
 } from "../wailsjs/go/main/App";
 
 const REFRESH_OPTS = [1, 2, 3, 5, 10, 15, 20, 30, 60];
@@ -192,6 +193,9 @@ export default function App() {
     if (autoApplyFired) return;
     autoApplyFired = true;
     (async () => {
+      // One-time notice: auto-update changed to notify-only due to the corporate
+      // EDR policy. Fire-and-forget (native dialog, self-guarded to show once).
+      ShowUpdateModeNoticeOnce().catch(() => { /* ignore */ });
       // Pop the release notes stashed by the version that just updated (once).
       try {
         const notes = await GetPendingReleaseNotes();

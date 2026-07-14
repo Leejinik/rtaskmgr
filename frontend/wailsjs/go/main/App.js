@@ -134,6 +134,10 @@ export function SetPwConfig(arg1) {
   return window['go']['main']['App']['SetPwConfig'](arg1);
 }
 
+export function ShowUpdateModeNoticeOnce() {
+  return window['go']['main']['App']['ShowUpdateModeNoticeOnce']();
+}
+
 export function StartRecording(arg1) {
   return window['go']['main']['App']['StartRecording'](arg1);
 }

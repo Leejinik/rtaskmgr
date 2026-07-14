@@ -696,6 +696,29 @@ func (a *App) MarkReleaseNotesSeen() error {
 	return a.updater.ClearPendingNotes()
 }
 
+// ShowUpdateModeNoticeOnce shows a one-time native notice explaining that the
+// in-app auto-update switched from silent self-replacement to "notify + manual
+// download", because the corporate EDR security policy quarantines self-
+// replacing executables (in the field it left the app with no runnable binary).
+// It fires at most once per install, guarded by a marker file in the config dir.
+func (a *App) ShowUpdateModeNoticeOnce() {
+	home, _ := os.UserHomeDir()
+	dir := filepath.Join(home, ".rtaskmgr")
+	marker := filepath.Join(dir, "update-mode-notice.seen")
+	if _, err := os.Stat(marker); err == nil {
+		return // already shown on this install
+	}
+	_, _ = wruntime.MessageDialog(a.ctx, wruntime.MessageDialogOptions{
+		Type:  wruntime.InfoDialog,
+		Title: "자동 업데이트 방식 변경 안내",
+		Message: "사내 EDR 보안 정책이 자기교체식 자동 업데이트를 차단하여, 앞으로는 새 버전이 " +
+			"나오면 자동 설치 대신 ‘알림 + 수동 다운로드’ 방식으로 동작합니다.\n\n" +
+			"새 버전이 있으면 화면에 다운로드 안내가 표시되고, 클릭하면 릴리스 페이지가 브라우저로 열립니다.",
+	})
+	_ = os.MkdirAll(dir, 0755)
+	_ = os.WriteFile(marker, []byte("seen"), 0644)
+}
+
 // beforeClose finalizes any active immediate recording (the file the user chose
 // is already real, so just close it cleanly) and tears down sessions. Scheduled
 // server-side recordings intentionally keep running on the host. Returns false

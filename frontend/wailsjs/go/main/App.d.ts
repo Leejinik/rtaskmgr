@@ -73,6 +73,8 @@ export function SetInterval(arg1:string,arg2:number):Promise<void>;
 
 export function SetPwConfig(arg1:pwledger.Config):Promise<void>;
 
+export function ShowUpdateModeNoticeOnce():Promise<void>;
+
 export function StartRecording(arg1:string):Promise<string>;
 
 export function StartScheduled(arg1:string,arg2:number,arg3:number,arg4:string):Promise<monitor.RecMeta>;
