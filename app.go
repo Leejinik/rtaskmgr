@@ -636,30 +636,31 @@ func (a *App) CheckForUpdate() (updater.UpdateInfo, error) {
 	return a.updater.Check(a.ctx)
 }
 
-// ApplyUpdate downloads the new exe, stashes the release notes, swaps the
-// binary in place, and quits the app so the swapped-in binary relaunches. This
-// is the manual/unguarded path (clicking the update badge).
+// ApplyUpdate no longer self-replaces the running binary. It opens the GitHub
+// release page for the new version in the default browser so the user can
+// download the new exe and drop it in manually.
+//
+// Why: rewriting our own on-disk image and relaunching it is a textbook malware
+// heuristic. In the field an endpoint-security agent (Sealock-class EDR;
+// Defender was disabled) quarantined and path-locked the swapped-in exe AND the
+// renamed-aside original, leaving no runnable binary and no working rollback.
+// A manual download to a fresh path sidesteps the whole self-modification trip.
 func (a *App) ApplyUpdate(info updater.UpdateInfo) error {
 	if a.updater == nil {
 		return errors.New("updater not initialised")
 	}
-	if err := a.updater.Apply(a.ctx, info); err != nil {
-		return err
+	url := "https://github.com/Leejinik/rtaskmgr/releases/latest"
+	if info.LatestVersion != "" {
+		url = fmt.Sprintf("https://github.com/Leejinik/rtaskmgr/releases/tag/%s", info.LatestVersion)
 	}
-	// Hand off to the relaunch. Quit in a goroutine so this call can return
-	// cleanly to the frontend before the runtime shuts down.
-	go func() {
-		wruntime.Quit(a.ctx)
-	}()
+	wruntime.BrowserOpenURL(a.ctx, url)
 	return nil
 }
 
-// AutoUpdate is the GUARDED silent startup path. It checks for a newer build
-// and, if one is available AND the loop guard green-lights it, applies it and
-// quits so the swapped-in binary relaunches. If the guard trips (5 attempts at
-// the same target without the running version converging), it returns
-// Blocked=true so the frontend can show a manual-update badge instead of
-// looping forever.
+// AutoUpdate is the startup update check. It is NOTIFY-ONLY: it asks GitHub for
+// a newer build and, if one exists, reports it (Blocked=true) so the frontend
+// shows a manual "download" pill. It never self-replaces or quits — see
+// ApplyUpdate for why self-replacement was removed.
 func (a *App) AutoUpdate() updater.AutoUpdateResult {
 	if a.updater == nil {
 		return updater.AutoUpdateResult{}
@@ -668,14 +669,9 @@ func (a *App) AutoUpdate() updater.AutoUpdateResult {
 	if err != nil || !info.Available {
 		return updater.AutoUpdateResult{Info: info}
 	}
-	if !a.updater.ShouldAutoApply(info) {
-		return updater.AutoUpdateResult{Blocked: true, Info: info}
-	}
-	if err := a.updater.Apply(a.ctx, info); err != nil {
-		return updater.AutoUpdateResult{Blocked: true, Info: info}
-	}
-	go wruntime.Quit(a.ctx)
-	return updater.AutoUpdateResult{Applying: true, Info: info}
+	// Available → surface the manual-download pill (Blocked repurposed as
+	// "notify, do not auto-apply").
+	return updater.AutoUpdateResult{Blocked: true, Info: info}
 }
 
 // GetPendingReleaseNotes returns release notes stashed by the previous version

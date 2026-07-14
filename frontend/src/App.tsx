@@ -115,9 +115,10 @@ export default function App() {
   );
   const [toast, setToast] = useState("");
 
-  // Auto-updater UI: a persistent manual-update pill (shown when the silent path
-  // is blocked by the loop guard) and a one-shot release-notes popup carried
-  // over from the version that just updated.
+  // Auto-updater UI: a persistent manual-download pill (shown when a newer build
+  // is available — notify-only, no self-replace) and a one-shot release-notes
+  // popup carried over from a version that just updated (legacy, self-replace
+  // path removed).
   const [manualUpdate, setManualUpdate] = useState<updater.UpdateInfo | null>(null);
   const [releaseNotes, setReleaseNotes] = useState<{ version: string; notes: string } | null>(null);
 
@@ -196,15 +197,12 @@ export default function App() {
         const notes = await GetPendingReleaseNotes();
         if (notes?.version) setReleaseNotes({ version: notes.version, notes: notes.notes ?? "" });
       } catch { /* ignore */ }
-      // Guarded silent update. Applying → app quits & relaunches shortly.
-      // Blocked (guard tripped) → offer a manual-update pill instead of looping.
+      // Notify-only update check: if a newer build exists, show a manual
+      // "download" pill. We never self-replace the running exe — endpoint
+      // security (EDR) quarantines self-updating binaries.
       try {
         const r = await AutoUpdate();
-        if (r?.applying) {
-          showToast("업데이트 적용 중… " + (r.info?.latestVersion ?? ""));
-        } else if (r?.blocked && r.info) {
-          setManualUpdate(r.info);
-        }
+        if (r?.info?.available) setManualUpdate(r.info);
       } catch { /* ignore */ }
     })();
   }, []);
@@ -217,10 +215,10 @@ export default function App() {
   const applyManualUpdate = async () => {
     if (!manualUpdate) return;
     try {
-      showToast("업데이트 적용 중… " + (manualUpdate.latestVersion ?? ""));
-      await ApplyUpdate(manualUpdate);
+      showToast("브라우저에서 다운로드 페이지를 엽니다… " + (manualUpdate.latestVersion ?? ""));
+      await ApplyUpdate(manualUpdate); // opens the GitHub release page (no self-replace)
     } catch (e: any) {
-      showToast(typeof e === "string" ? e : e?.message ?? "업데이트 적용 실패");
+      showToast(typeof e === "string" ? e : e?.message ?? "다운로드 페이지 열기 실패");
     }
   };
 
@@ -812,8 +810,8 @@ export default function App() {
                 background: "#2f6f3f", borderColor: "#3c9553", color: "#fff",
               }}
               onClick={applyManualUpdate}
-              title="새 버전을 지금 내려받아 적용합니다">
-              ⬆️ 새 버전 {manualUpdate.latestVersion} (수동 업데이트)
+              title="브라우저에서 릴리즈 페이지를 열어 새 버전을 직접 내려받습니다 (자동 교체 안 함)">
+              ⬆️ 새 버전 {manualUpdate.latestVersion} — 다운로드
             </button>
           )}
           <button className="toolbtn" style={{ width: "100%", marginBottom: 6 }}
