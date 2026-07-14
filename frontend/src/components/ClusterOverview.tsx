@@ -153,7 +153,7 @@ function ServerProcColumn({
   hideKthreads: boolean;
   sort: Sort;
   onSort: (k: ColKey) => void;
-  onResizeStart: (k: ColKey, e: React.MouseEvent) => void;
+  onResizeStart: (k: ColKey, e: React.MouseEvent, invert?: boolean) => void;
   onColMenu: (k: ColKey, e: React.MouseEvent) => void;
   onRowMenu?: (pid: number, name: string, service: string, e: React.MouseEvent) => void;
   onOpen: () => void;
@@ -180,7 +180,7 @@ function ServerProcColumn({
           <table className={`pc-table ${density}`}>
             <thead>
               <tr>
-                {cols.map((c) => (
+                {cols.map((c, i) => (
                   <th key={c} className={c === "name" || c === "service" ? "left" : ""}
                     style={{ width: c === "service" ? undefined : colW[c] }}
                     onClick={(e) => { e.stopPropagation(); onSort(c); }}
@@ -188,12 +188,22 @@ function ServerProcColumn({
                     title="클릭: 정렬 · 우클릭: 컬럼 제거">
                     {COL_LABEL[c]}
                     {sort.key === c && <span className="pc-arrow">{sort.dir === 1 ? " ▲" : " ▼"}</span>}
-                    {c !== "service" && (
-                      <span className="col-resizer"
-                        onMouseDown={(e) => onResizeStart(c, e)}
-                        onClick={(e) => e.stopPropagation()}
-                        title="드래그해서 폭 조절" />
-                    )}
+                    {c === "service"
+                      // 서비스는 자체 폭이 없는 sink 컬럼이라, 오른쪽 이웃 컬럼을 반대
+                      // 방향으로 리사이즈해 경계가 커서를 따라오게 한다(서비스는 자동으로
+                      // 채워짐). 서비스가 마지막 컬럼이면 오른쪽 경계가 없으므로 핸들 생략.
+                      ? i < cols.length - 1 && (
+                          <span className="col-resizer"
+                            onMouseDown={(e) => onResizeStart(cols[i + 1], e, true)}
+                            onClick={(e) => e.stopPropagation()}
+                            title="드래그해서 폭 조절" />
+                        )
+                      : (
+                        <span className="col-resizer"
+                          onMouseDown={(e) => onResizeStart(c, e)}
+                          onClick={(e) => e.stopPropagation()}
+                          title="드래그해서 폭 조절" />
+                      )}
                   </th>
                 ))}
               </tr>
@@ -282,12 +292,15 @@ export default function ClusterOverview({
   const [colW, setColW] = useState<Record<ColKey, number>>(() => ({
     name: 120, pid: 58, cpu: 48, mem: 60, disk: 62, net: 62, service: 0,
   }));
-  const dragRef = useRef<{ col: ColKey; startX: number; startW: number } | null>(null);
+  const dragRef = useRef<{ col: ColKey; startX: number; startW: number; invert: boolean } | null>(null);
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
       const d = dragRef.current;
       if (!d) return;
-      const w = Math.max(40, Math.min(420, d.startW + (e.clientX - d.startX)));
+      // invert=true는 서비스|CPU 경계 드래그: 커서를 오른쪽으로 끌면 대상(CPU) 컬럼을
+      // 좁혀 서비스가 그 공간을 자동으로 채우도록 델타 부호를 뒤집는다.
+      const dx = d.invert ? d.startX - e.clientX : e.clientX - d.startX;
+      const w = Math.max(40, Math.min(420, d.startW + dx));
       setColW((prev) => ({ ...prev, [d.col]: w }));
     };
     const onUp = () => {
@@ -301,8 +314,8 @@ export default function ClusterOverview({
       window.removeEventListener("mouseup", onUp);
     };
   }, []);
-  function startResize(col: ColKey, e: React.MouseEvent) {
-    dragRef.current = { col, startX: e.clientX, startW: colW[col] };
+  function startResize(col: ColKey, e: React.MouseEvent, invert = false) {
+    dragRef.current = { col, startX: e.clientX, startW: colW[col], invert };
     document.body.classList.add("col-resizing");
     e.preventDefault();
     e.stopPropagation();
