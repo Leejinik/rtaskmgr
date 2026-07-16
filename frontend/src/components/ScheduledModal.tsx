@@ -25,6 +25,16 @@ const fmtSize = (b: number) => {
 const fmtTime = (t: number) =>
   t > 0 ? new Date(t).toLocaleString("ko-KR", { hour12: false }) : "—";
 
+const REC_STATUS: Record<string, { label: string; color: string }> = {
+  running: { label: "● 기록 중", color: "var(--good)" },
+  deadline: { label: "■ 완료", color: "var(--text-dim)" },
+  "low-disk": { label: "⚠ 디스크 부족으로 중단", color: "var(--bad)" },
+  signal: { label: "■ 중지됨", color: "var(--warn, #d8b450)" },
+  unknown: { label: "? 종료 사유 확인 불가", color: "var(--warn, #d8b450)" },
+};
+
+const recStatus = (status: string) => REC_STATUS[status] ?? REC_STATUS.unknown;
+
 export default function ScheduledModal({ hostId, hostName, onClose, onPlay }: Props) {
   const [list, setList] = useState<monitor.RecMeta[]>([]);
   const [days, setDays] = useState(0);
@@ -266,27 +276,30 @@ export default function ScheduledModal({ hostId, hostName, onClose, onPlay }: Pr
                 </tr>
               </thead>
               <tbody>
-                {list.map((r) => (
-                  <tr key={r.id}>
-                    <td className="left">
-                      <span style={{ color: r.status === "running" ? "var(--good)" : "var(--text-dim)" }}>
-                        {r.status === "running" ? "● 기록 중" : "■ 완료"}
-                      </span>
-                    </td>
-                    <td className="left" style={{ fontSize: 11, color: "var(--text-dim)" }}>
-                      {fmtTime(r.startT)} ~ {fmtTime(r.plannedEndT)}
-                      {r.intervalSec ? ` · ${r.intervalSec}초 간격` : ""}
-                    </td>
-                    <td>{fmtSize(r.sizeBytes)}</td>
-                    <td className="left">
-                      <button className="toolbtn" onClick={() => play(r.id)} disabled={busy}>재생</button>{" "}
-                      {r.status === "running" && (
-                        <button className="toolbtn" onClick={() => stop(r.id)} disabled={busy}>중지</button>
-                      )}{" "}
-                      <button className="toolbtn" onClick={() => remove(r.id)} disabled={busy}>삭제</button>
-                    </td>
-                  </tr>
-                ))}
+                {list.map((r) => {
+                  const state = recStatus(r.status);
+                  return (
+                    <tr key={r.id}>
+                      <td className="left">
+                        <span style={{ color: state.color }}>
+                          {state.label}
+                        </span>
+                      </td>
+                      <td className="left" style={{ fontSize: 11, color: "var(--text-dim)" }}>
+                        {fmtTime(r.startT)} ~ {fmtTime(r.plannedEndT)}
+                        {r.intervalSec ? ` · ${r.intervalSec}초 간격` : ""}
+                      </td>
+                      <td>{fmtSize(r.sizeBytes)}</td>
+                      <td className="left">
+                        <button className="toolbtn" onClick={() => play(r.id)} disabled={busy}>재생</button>{" "}
+                        {r.status === "running" && (
+                          <button className="toolbtn" onClick={() => stop(r.id)} disabled={busy}>중지</button>
+                        )}{" "}
+                        <button className="toolbtn" onClick={() => remove(r.id)} disabled={busy}>삭제</button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
