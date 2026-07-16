@@ -47,7 +47,7 @@ type RecMeta struct {
 	PlannedEndT int64  `json:"plannedEndT"`
 	DurationSec int    `json:"durationSec"`
 	IntervalSec int    `json:"intervalSec"`
-	Status      string `json:"status"` // "running" | "done"
+	Status      string `json:"status"` // "running" | "deadline" | "low-disk" | "signal" | "unknown"
 	SizeBytes   int64  `json:"sizeBytes"`
 }
 
@@ -1052,15 +1052,25 @@ func (m *Manager) ListScheduled(hostID string) ([]RecMeta, error) {
 		`id=$(basename "$mf" .meta.json); f="$d/$id.ndjson.gz"; ` +
 		`sz=$(stat -c%s "$f" 2>/dev/null || echo 0); ` +
 		`run=0; pgrep -f "$f" >/dev/null 2>&1 && run=1; ` +
-		`echo "STAT|$id|$sz|$run"; echo "META|$(base64 -w0 "$mf")"; done; done`
+		`reason=$(base64 -w0 "$f.done" 2>/dev/null || true); ` +
+		`echo "STAT|$id|$sz|$run|$reason"; echo "META|$(base64 -w0 "$mf")"; done; done`
 	out, err := m.plainRun(s, script)
 	if err != nil {
 		return nil, err
 	}
+	return parseScheduledOutput(out), nil
+}
 
+type scheduledStat struct {
+	size          int64
+	running       bool
+	encodedReason string
+}
+
+func parseScheduledOutput(out string) []RecMeta {
 	metas := map[string]*RecMeta{}
 	order := []string{}
-	stats := map[string][2]int64{} // id -> {size, running}
+	stats := map[string]scheduledStat{}
 	for _, line := range strings.Split(out, "\n") {
 		switch {
 		case strings.HasPrefix(line, "META|"):
@@ -1076,11 +1086,15 @@ func (m *Manager) ListScheduled(hostID string) ([]RecMeta, error) {
 				metas[rm.ID] = &rm
 			}
 		case strings.HasPrefix(line, "STAT|"):
-			parts := strings.Split(line[5:], "|")
-			if len(parts) == 3 {
+			parts := strings.SplitN(line[5:], "|", 4)
+			if len(parts) >= 3 {
 				sz, _ := strconv.ParseInt(parts[1], 10, 64)
 				run, _ := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64)
-				stats[parts[0]] = [2]int64{sz, run}
+				reason := ""
+				if len(parts) == 4 {
+					reason = parts[3]
+				}
+				stats[parts[0]] = scheduledStat{size: sz, running: run == 1, encodedReason: reason}
 			}
 		}
 	}
@@ -1088,16 +1102,29 @@ func (m *Manager) ListScheduled(hostID string) ([]RecMeta, error) {
 	for _, id := range order {
 		rm := metas[id]
 		if st, ok := stats[id]; ok {
-			rm.SizeBytes = st[0]
-			if st[1] == 1 {
-				rm.Status = "running"
-			} else {
-				rm.Status = "done"
-			}
+			rm.SizeBytes = st.size
+			rm.Status = scheduledStatus(st.running, st.encodedReason)
 		}
 		out2 = append(out2, *rm)
 	}
-	return out2, nil
+	return out2
+}
+
+func scheduledStatus(running bool, encodedReason string) string {
+	if running {
+		return "running"
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encodedReason))
+	if err != nil {
+		return "unknown"
+	}
+	reason := strings.TrimSpace(string(raw))
+	switch reason {
+	case "deadline", "low-disk", "signal":
+		return reason
+	default:
+		return "unknown"
+	}
 }
 
 // StopScheduled signals the sampler for one recording to stop; it finalizes the
