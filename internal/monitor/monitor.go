@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -1202,13 +1203,37 @@ func dial(h host.Host) (*ssh.Client, error) {
 	if port == 0 {
 		port = 22
 	}
+	endpoint, err := sshEndpoint(h.Addr, port)
+	if err != nil {
+		return nil, err
+	}
 	cfg := &ssh.ClientConfig{
 		User:            h.User,
 		Auth:            auths,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         8 * time.Second,
 	}
-	return ssh.Dial("tcp", fmt.Sprintf("%s:%d", h.Addr, port), cfg)
+	return ssh.Dial("tcp", endpoint, cfg)
+}
+
+func sshEndpoint(addr string, port int) (string, error) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return "", fmt.Errorf("ssh address is required")
+	}
+	if strings.HasPrefix(addr, "[") || strings.HasSuffix(addr, "]") {
+		if !strings.HasPrefix(addr, "[") || !strings.HasSuffix(addr, "]") {
+			return "", fmt.Errorf("invalid bracketed ssh address %q", addr)
+		}
+		addr = strings.TrimSpace(addr[1 : len(addr)-1])
+		if addr == "" {
+			return "", fmt.Errorf("ssh address is required")
+		}
+	}
+	if port < 1 || port > 65535 {
+		return "", fmt.Errorf("invalid ssh port %d", port)
+	}
+	return net.JoinHostPort(addr, strconv.Itoa(port)), nil
 }
 
 const probeScript = `echo "uid=$(id -u)"; ` +
