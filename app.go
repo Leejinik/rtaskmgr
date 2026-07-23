@@ -51,6 +51,10 @@ type LogHostInfo struct {
 type LogMeta struct {
 	Path  string        `json:"path"`
 	Hosts []LogHostInfo `json:"hosts"`
+	// Stride > 1 means a large server-side recording was downsampled on the host
+	// before transfer (kept every Nth frame). The UI surfaces this so the reduced
+	// time resolution is obvious. 0/1 = full resolution.
+	Stride int `json:"stride"`
 }
 
 func NewApp(rpmFS fs.FS) *App {
@@ -520,7 +524,9 @@ func (a *App) DeleteScheduled(hostID, id string) error {
 // loads it into the playback buffer — returns LogMeta so the UI can open it like
 // a local log.
 func (a *App) DownloadScheduledAndPlay(hostID, id string) (LogMeta, error) {
-	frames, err := a.mgr.DownloadScheduled(hostID, id)
+	// Cap the frames pulled into memory; DownloadScheduled downsamples on the
+	// host when the capture is larger, returning the stride it applied.
+	frames, stride, err := a.mgr.DownloadScheduled(hostID, id, 6000)
 	if err != nil {
 		return LogMeta{}, err
 	}
@@ -539,7 +545,92 @@ func (a *App) DownloadScheduledAndPlay(hostID, id string) (LogMeta, error) {
 	a.logFrames = byHost
 	a.logMu.Unlock()
 
-	meta := LogMeta{Path: id}
+	meta := LogMeta{Path: id, Stride: stride}
+	for hid, fr := range byHost {
+		name := hid
+		if a.hosts != nil {
+			if h, ok, _ := a.hosts.Get(hid); ok && h.Name != "" {
+				name = h.Name
+			}
+		}
+		meta.Hosts = append(meta.Hosts, LogHostInfo{
+			ID: hid, Name: name, Frames: len(fr), StartT: fr[0].T, EndT: fr[len(fr)-1].T,
+		})
+	}
+	return meta, nil
+}
+
+// PrepareScheduledSlices splits a recording into hourly slices on the host (once)
+// so any window can be played in seconds afterwards. It emits "recSplit" progress
+// events ({id, pct}) while the one-time pass runs, and returns the epoch-hour keys
+// that hold data so the UI can build its date→hour tree.
+func (a *App) PrepareScheduledSlices(hostID, id string, startMs, endMs int64) ([]int64, error) {
+	return a.mgr.PrepareScheduledSlices(hostID, id, startMs, endMs, func(pct float64) {
+		wruntime.EventsEmit(a.ctx, "recSplit", map[string]interface{}{"id": id, "pct": pct})
+	})
+}
+
+// DownloadScheduledSlicesAndPlay loads [startMs, endMs) from the prebuilt hourly
+// slices and hands it to the playback buffer. Because only the overlapping hour
+// slices are decompressed, a window at the end of a long recording loads as fast
+// as one at the start.
+func (a *App) DownloadScheduledSlicesAndPlay(hostID, id string, startMs, endMs int64, intervalSec int) (LogMeta, error) {
+	frames, stride, err := a.mgr.DownloadScheduledSlices(hostID, id, startMs, endMs, intervalSec, 6000)
+	if err != nil {
+		return LogMeta{}, err
+	}
+	if len(frames) == 0 {
+		return LogMeta{}, fmt.Errorf("이 구간에 프레임이 없습니다")
+	}
+	byHost := map[string][]monitor.Frame{}
+	for _, f := range frames {
+		f.HostID = hostID
+		byHost[hostID] = append(byHost[hostID], f)
+	}
+	a.logMu.Lock()
+	a.logFrames = byHost
+	a.logMu.Unlock()
+
+	meta := LogMeta{Path: id, Stride: stride}
+	for hid, fr := range byHost {
+		name := hid
+		if a.hosts != nil {
+			if h, ok, _ := a.hosts.Get(hid); ok && h.Name != "" {
+				name = h.Name
+			}
+		}
+		meta.Hosts = append(meta.Hosts, LogHostInfo{
+			ID: hid, Name: name, Frames: len(fr), StartT: fr[0].T, EndT: fr[len(fr)-1].T,
+		})
+	}
+	return meta, nil
+}
+
+// DownloadScheduledDayAndPlay fetches just one calendar day [startMs, endMs) of a
+// recording and loads it into the playback buffer. Splitting a large multi-day
+// capture by day keeps each load bounded and at higher time resolution than
+// pulling the whole file at once. intervalSec (the recording cadence) sizes the
+// downsample stride.
+func (a *App) DownloadScheduledDayAndPlay(hostID, id string, startMs, endMs int64, intervalSec int) (LogMeta, error) {
+	frames, stride, err := a.mgr.DownloadScheduledDay(hostID, id, startMs, endMs, intervalSec, 6000)
+	if err != nil {
+		return LogMeta{}, err
+	}
+	if len(frames) == 0 {
+		return LogMeta{}, fmt.Errorf("이 날짜 구간에 프레임이 없습니다")
+	}
+	// The sampler's NDJSON carries no hostId; stamp the host we downloaded from
+	// so the playback UI can bucket the frames (see DownloadScheduledAndPlay).
+	byHost := map[string][]monitor.Frame{}
+	for _, f := range frames {
+		f.HostID = hostID
+		byHost[hostID] = append(byHost[hostID], f)
+	}
+	a.logMu.Lock()
+	a.logFrames = byHost
+	a.logMu.Unlock()
+
+	meta := LogMeta{Path: id, Stride: stride}
 	for hid, fr := range byHost {
 		name := hid
 		if a.hosts != nil {
@@ -615,6 +706,50 @@ func (a *App) LogFrames(hostID string) []monitor.Frame {
 	a.logMu.Lock()
 	defer a.logMu.Unlock()
 	return a.logFrames[hostID]
+}
+
+// LogFrameCount reports how many frames the opened log holds for a host.
+func (a *App) LogFrameCount(hostID string) int {
+	a.logMu.Lock()
+	defer a.logMu.Unlock()
+	return len(a.logFrames[hostID])
+}
+
+// LogFrameAt returns ONE frame (with its full process list) from the opened log.
+// Playback loads frames on demand rather than shipping the whole capture to the
+// WebView: an hour of a busy host is thousands of frames × thousands of processes,
+// which serialized as one payload OOMs the renderer (STATUS_BREAKPOINT). The
+// frames already live in Go memory, so serving them one at a time is cheap.
+func (a *App) LogFrameAt(hostID string, index int) monitor.Frame {
+	a.logMu.Lock()
+	defer a.logMu.Unlock()
+	fr := a.logFrames[hostID]
+	if index < 0 || index >= len(fr) {
+		return monitor.Frame{}
+	}
+	return fr[index]
+}
+
+// LogProcSeries builds one process's CPU/memory/disk timeline from the opened log
+// server-side, so the detail modal never needs every frame's process list in the
+// renderer.
+func (a *App) LogProcSeries(hostID string, pid int) []record.Point {
+	a.logMu.Lock()
+	defer a.logMu.Unlock()
+	fr := a.logFrames[hostID]
+	pts := make([]record.Point, 0, len(fr))
+	for i := range fr {
+		for j := range fr[i].Procs {
+			if p := &fr[i].Procs[j]; p.PID == pid {
+				pts = append(pts, record.Point{
+					T: fr[i].T, CPU: p.CPU, MemPct: p.MemPct,
+					RSSKiB: p.RSSKiB, DiskR: p.DiskR, DiskW: p.DiskW,
+				})
+				break
+			}
+		}
+	}
+	return pts
 }
 
 // ---- Auto-update --------------------------------------------------------

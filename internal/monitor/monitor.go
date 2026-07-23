@@ -22,6 +22,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,8 +48,17 @@ type RecMeta struct {
 	PlannedEndT int64  `json:"plannedEndT"`
 	DurationSec int    `json:"durationSec"`
 	IntervalSec int    `json:"intervalSec"`
-	Status      string `json:"status"` // "running" | "done"
-	SizeBytes   int64  `json:"sizeBytes"`
+	// Status is how the recording ended:
+	//   running     — sampler process still alive
+	//   done        — reached the planned end time cleanly (.done = "deadline")
+	//   stopped     — stopped by the user (.done = "signal")
+	//   low-disk    — self-aborted on the disk free-space guard (.done = "low-disk")
+	//   interrupted — process gone but NO .done marker → killed abnormally
+	//                 (server reboot / OOM / SIGKILL). The capture is truncated.
+	Status     string `json:"status"`
+	SizeBytes  int64  `json:"sizeBytes"`
+	LastT      int64  `json:"lastT"`      // file mtime (unix millis) ≈ when recording actually stopped
+	DoneReason string `json:"doneReason"` // raw .done marker text (empty when interrupted/running)
 }
 
 // RecTarget is one candidate filesystem a scheduled recording could be written
@@ -334,6 +344,12 @@ func (m *Manager) Start(parent context.Context, h host.Host, intervalSec int) (C
 	m.mu.Lock()
 	m.sessions[h.ID] = s
 	m.mu.Unlock()
+
+	// App-level SSH keepalive: a scheduled-recording download can run a multi-
+	// minute host-side zcat with no bytes flowing back over the channel (base64
+	// only emits at the end). Without this, an idle-timeout sshd drops the
+	// connection mid-download; it also lets us notice a dead peer promptly.
+	go keepAlive(ctx, client)
 
 	m.launchStream(h.ID, s)
 	m.status(h.ID, "streaming", "")
@@ -1047,20 +1063,32 @@ func (m *Manager) ListScheduled(hostID string) ([]RecMeta, error) {
 	if s == nil {
 		return nil, fmt.Errorf("호스트가 연결되어 있지 않습니다")
 	}
+	// For each recording emit: size, running flag, file mtime (last write ≈ stop
+	// time), and the .done marker text if present. The sampler writes "<file>.done"
+	// with its exit reason (deadline|signal|low-disk) ONLY on a clean shutdown; a
+	// server reboot / SIGKILL leaves no marker, which is how we detect an abnormal
+	// (interrupted) recording. base64 the marker so its content can't break parsing.
 	script := `for b in ` + recBasesSh(s) + `; do d="$b/.rtaskmgr-rec"; [ -d "$d" ] || continue; ` +
 		`for mf in "$d"/*.meta.json; do [ -e "$mf" ] || continue; ` +
 		`id=$(basename "$mf" .meta.json); f="$d/$id.ndjson.gz"; ` +
 		`sz=$(stat -c%s "$f" 2>/dev/null || echo 0); ` +
+		`mt=$(stat -c%Y "$f" 2>/dev/null || echo 0); ` +
 		`run=0; pgrep -f "$f" >/dev/null 2>&1 && run=1; ` +
-		`echo "STAT|$id|$sz|$run"; echo "META|$(base64 -w0 "$mf")"; done; done`
+		`dn=""; [ -e "$f.done" ] && dn=$(base64 -w0 "$f.done" 2>/dev/null); ` +
+		`echo "STAT|$id|$sz|$run|$mt|$dn"; echo "META|$(base64 -w0 "$mf")"; done; done`
 	out, err := m.plainRun(s, script)
 	if err != nil {
 		return nil, err
 	}
 
+	type recStat struct {
+		size, running, mtime int64
+		doneReason           string // decoded .done text ("" = no marker)
+		haveDone             bool
+	}
 	metas := map[string]*RecMeta{}
 	order := []string{}
-	stats := map[string][2]int64{} // id -> {size, running}
+	stats := map[string]recStat{}
 	for _, line := range strings.Split(out, "\n") {
 		switch {
 		case strings.HasPrefix(line, "META|"):
@@ -1076,11 +1104,20 @@ func (m *Manager) ListScheduled(hostID string) ([]RecMeta, error) {
 				metas[rm.ID] = &rm
 			}
 		case strings.HasPrefix(line, "STAT|"):
-			parts := strings.Split(line[5:], "|")
-			if len(parts) == 3 {
+			// STAT|id|size|running|mtime|doneB64  (doneB64 may be empty)
+			parts := strings.SplitN(line[5:], "|", 5)
+			if len(parts) >= 4 {
 				sz, _ := strconv.ParseInt(parts[1], 10, 64)
-				run, _ := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64)
-				stats[parts[0]] = [2]int64{sz, run}
+				run, _ := strconv.ParseInt(parts[2], 10, 64)
+				mt, _ := strconv.ParseInt(parts[3], 10, 64)
+				st := recStat{size: sz, running: run, mtime: mt}
+				if len(parts) == 5 && strings.TrimSpace(parts[4]) != "" {
+					if db, e := base64.StdEncoding.DecodeString(strings.TrimSpace(parts[4])); e == nil {
+						st.haveDone = true
+						st.doneReason = strings.TrimSpace(string(db))
+					}
+				}
+				stats[parts[0]] = st
 			}
 		}
 	}
@@ -1088,10 +1125,21 @@ func (m *Manager) ListScheduled(hostID string) ([]RecMeta, error) {
 	for _, id := range order {
 		rm := metas[id]
 		if st, ok := stats[id]; ok {
-			rm.SizeBytes = st[0]
-			if st[1] == 1 {
+			rm.SizeBytes = st.size
+			rm.LastT = st.mtime * 1000
+			rm.DoneReason = st.doneReason
+			switch {
+			case st.running == 1:
 				rm.Status = "running"
-			} else {
+			case !st.haveDone:
+				// Process gone but the sampler never wrote its exit marker →
+				// it was killed abnormally (reboot/OOM/SIGKILL): truncated.
+				rm.Status = "interrupted"
+			case st.doneReason == "signal":
+				rm.Status = "stopped"
+			case st.doneReason == "low-disk":
+				rm.Status = "low-disk"
+			default: // "deadline" (or any clean marker) → reached planned end
 				rm.Status = "done"
 			}
 		}
@@ -1127,35 +1175,73 @@ func (m *Manager) DeleteScheduled(hostID, id string) error {
 	if err != nil {
 		return err
 	}
-	// file is "<dir>/<id>.ndjson.gz"; remove it and its .done/.meta.json sidecars.
+	// file is "<dir>/<id>.ndjson.gz"; remove it, its .done/.meta.json sidecars,
+	// and the hourly slice index directory (<file>.slices) if one was built.
 	d := strings.TrimSuffix(file, "/"+id+".ndjson.gz")
-	_, err = m.plainRun(s, fmt.Sprintf("rm -f %s/%s.ndjson.gz %s/%s.ndjson.gz.done %s/%s.meta.json; echo done",
-		d, id, d, id, d, id))
+	_, err = m.plainRun(s, fmt.Sprintf("rm -rf %s/%s.ndjson.gz %s/%s.ndjson.gz.done %s/%s.meta.json %s; echo done",
+		d, id, d, id, d, id, sliceDirFor(file)))
 	return err
 }
 
-// DownloadScheduled fetches a recording, decompresses it, and returns its
-// frames for playback. The gz is base64-streamed over the existing SSH session.
-func (m *Manager) DownloadScheduled(hostID, id string) ([]Frame, error) {
+// bytesPerFrameGz is a rough compressed-size-per-frame estimate (~8 KB/frame at
+// a 1s interval, from the disk-usage probe) used only to pick a downsampling
+// stride from the file size, so we never have to pre-scan a multi-GB capture.
+const bytesPerFrameGz = 8000
+
+// DownloadScheduled fetches a recording and returns its frames for playback.
+//
+// A 7-day 1s capture is ~600k frames × hundreds of processes — base64-streaming
+// the whole gz and unmarshalling every frame exhausts memory and never opens.
+// So we decimate ON THE HOST: estimate the frame count from the file size, pick
+// a stride that keeps at most maxFrames frames (evenly spaced, plus the very
+// last line so the end / cut-off point is always visible), then re-gzip just
+// those lines before transfer. Returns the stride used (1 = full resolution).
+//
+// This tolerates a truncated gz (interrupted recording): zcat emits everything
+// up to the corruption and the pipeline still succeeds.
+func (m *Manager) DownloadScheduled(hostID, id string, maxFrames int) ([]Frame, int, error) {
 	s := m.get(hostID)
 	if s == nil {
-		return nil, fmt.Errorf("호스트가 연결되어 있지 않습니다")
+		return nil, 0, fmt.Errorf("호스트가 연결되어 있지 않습니다")
+	}
+	if maxFrames <= 0 {
+		maxFrames = 6000
 	}
 	file, err := m.resolveRecFile(s, id)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	out, err := m.plainRun(s, "base64 -w0 "+file)
+	// One round trip: compute stride from the on-host file size, then emit
+	// "STRIDE=<n>\n" followed by the base64 of the re-gzipped, decimated stream.
+	script := fmt.Sprintf(
+		`f=%s; sz=$(stat -c%%s "$f" 2>/dev/null || echo 0); `+
+			`st=$(awk -v sz="$sz" -v bpf=%d -v mx=%d 'BEGIN{fr=sz/bpf; s=int((fr+mx-1)/mx); if(s<1)s=1; print s}'); `+
+			`echo "STRIDE=$st"; `+
+			`zcat -f "$f" 2>/dev/null | awk -v st="$st" '{ if ((NR-1)%%st==0) print; l=$0 } END{ if (NR>0 && (NR-1)%%st!=0) print l }' | gzip -c | base64 -w0`,
+		file, bytesPerFrameGz, maxFrames)
+	out, err := m.plainRun(s, script)
 	if err != nil {
-		return nil, fmt.Errorf("다운로드 실패: %s", tailLines(out, 2))
+		return nil, 0, fmt.Errorf("다운로드 실패: %s", tailLines(out, 2))
 	}
-	gzBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(out))
+	// Split the STRIDE header from the base64 payload.
+	stride := 1
+	nl := strings.IndexByte(out, '\n')
+	if nl < 0 {
+		return nil, 0, fmt.Errorf("다운로드 실패: 예상치 못한 응답")
+	}
+	if hv := strings.TrimSpace(out[:nl]); strings.HasPrefix(hv, "STRIDE=") {
+		if v, e := strconv.Atoi(strings.TrimPrefix(hv, "STRIDE=")); e == nil && v > 0 {
+			stride = v
+		}
+	}
+	b64 := strings.TrimSpace(out[nl+1:])
+	gzBytes, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
-		return nil, fmt.Errorf("디코드 실패: %w", err)
+		return nil, 0, fmt.Errorf("디코드 실패: %w", err)
 	}
 	gzr, err := gzip.NewReader(bytes.NewReader(gzBytes))
 	if err != nil {
-		return nil, fmt.Errorf("gzip 열기 실패: %w", err)
+		return nil, 0, fmt.Errorf("gzip 열기 실패: %w", err)
 	}
 	defer gzr.Close()
 	var frames []Frame
@@ -1171,7 +1257,285 @@ func (m *Manager) DownloadScheduled(hostID, id string) ([]Frame, error) {
 			frames = append(frames, f)
 		}
 	}
-	return frames, nil
+	return frames, stride, nil
+}
+
+// DownloadScheduledDay fetches only the frames whose timestamp falls in the
+// half-open window [startMs, endMs) of a recording, decimated to at most
+// maxFrames. It powers the per-day playback view: a multi-GB, multi-day capture
+// is reviewed one calendar day at a time at far higher resolution than the
+// whole-file view could afford.
+//
+// gzip is not seekable, so the host still decompresses from the beginning — but
+// the awk exits the instant a frame reaches endMs, so early days stop almost
+// immediately and only the final day reads to EOF. The keepalive started in
+// Start() keeps that last, longest read from being idle-dropped.
+func (m *Manager) DownloadScheduledDay(hostID, id string, startMs, endMs int64, intervalSec, maxFrames int) ([]Frame, int, error) {
+	s := m.get(hostID)
+	if s == nil {
+		return nil, 0, fmt.Errorf("호스트가 연결되어 있지 않습니다")
+	}
+	if endMs <= startMs {
+		return nil, 0, fmt.Errorf("잘못된 날짜 구간입니다")
+	}
+	if intervalSec < 1 {
+		intervalSec = 1
+	}
+	if maxFrames <= 0 {
+		maxFrames = 6000
+	}
+	file, err := m.resolveRecFile(s, id)
+	if err != nil {
+		return nil, 0, err
+	}
+	// Pick a stride from the window's *nominal* frame count (duration / cadence)
+	// so the kept frames stay under maxFrames. Over-estimating is safe (evenly
+	// spaced, just fewer); a truncated final day yields fewer than nominal.
+	winFrames := (endMs - startMs) / 1000 / int64(intervalSec)
+	stride := 1
+	if winFrames > int64(maxFrames) {
+		stride = int((winFrames + int64(maxFrames) - 1) / int64(maxFrames))
+	}
+	// Host pipeline: skip frames before the window, decimate within it, and
+	// exit() the moment a timestamp reaches endMs. The timestamp is the leading
+	// field of every NDJSON line ({"t":<millis>,...}), so substr($0,6)+0 reads
+	// it with no JSON parser; substr($0,1,1)=="{" rejects any partial/blank line
+	// (e.g. the truncated tail of an interrupted recording).
+	script := fmt.Sprintf(
+		`f=%s; zcat -f "$f" 2>/dev/null | awk -v a=%d -v b=%d -v st=%d `+
+			`'substr($0,1,1)!="{"{next} { t=substr($0,6)+0; if(t<a)next; if(t>=b)exit; if(n%%st==0)print; last=$0; n++ } `+
+			`END{ if(n>0 && (n-1)%%st!=0) print last }' | gzip -c | base64 -w0`,
+		file, startMs, endMs, stride)
+	out, err := m.plainRun(s, script)
+	if err != nil {
+		return nil, 0, fmt.Errorf("다운로드 실패: %s", tailLines(out, 2))
+	}
+	b64 := strings.TrimSpace(out)
+	if b64 == "" {
+		return nil, stride, nil // no frames in this window
+	}
+	gzBytes, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil, 0, fmt.Errorf("디코드 실패: %w", err)
+	}
+	gzr, err := gzip.NewReader(bytes.NewReader(gzBytes))
+	if err != nil {
+		return nil, 0, fmt.Errorf("gzip 열기 실패: %w", err)
+	}
+	defer gzr.Close()
+	var frames []Frame
+	sc := bufio.NewScanner(gzr)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var fr Frame
+		if json.Unmarshal(line, &fr) == nil {
+			frames = append(frames, fr)
+		}
+	}
+	return frames, stride, nil
+}
+
+// ---- hourly slice index (bounded per-window playback) ----
+//
+// gzip is not seekable, so loading a window near the END of a multi-GB recording
+// would otherwise mean decompressing everything before it. To make EVERY window
+// fast, we split a recording ONCE into per-epoch-hour gzip slices
+// (<file>.slices/H<hour>.ndjson.gz), then serve any window by decompressing only
+// the few hour-slices it overlaps. epoch-hour = floor(t_ms / 3600000).
+
+const sliceHourMs = 3600000
+
+func sliceDirFor(recFile string) string { return recFile + ".slices" }
+
+// sliceKeys lists the epoch-hour keys that have a slice file in dir, sorted.
+func (m *Manager) sliceKeys(s *session, dir string) ([]int64, error) {
+	out, _ := m.plainRun(s, `ls `+dir+`/H*.ndjson.gz 2>/dev/null | sed 's#.*/H##; s#\.ndjson\.gz$##'`)
+	var keys []int64
+	for _, ln := range strings.Split(out, "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		if k, e := strconv.ParseInt(ln, 10, 64); e == nil {
+			keys = append(keys, k)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	return keys, nil
+}
+
+// PrepareScheduledSlices splits a recording into hourly gzip slices on the host,
+// streaming a 0..1 progress fraction as it goes. It is idempotent: a completed
+// split (marked by <dir>/.done) is detected and skipped. Returns the sorted
+// epoch-hour keys that hold data. startMs/endMs are the recording's known span,
+// used only to turn the streamed timestamps into a progress percentage.
+func (m *Manager) PrepareScheduledSlices(hostID, id string, startMs, endMs int64, progress func(float64)) ([]int64, error) {
+	s := m.get(hostID)
+	if s == nil {
+		return nil, fmt.Errorf("호스트가 연결되어 있지 않습니다")
+	}
+	file, err := m.resolveRecFile(s, id)
+	if err != nil {
+		return nil, err
+	}
+	dir := sliceDirFor(file)
+	// Already split? Enumerate and return without touching the big file.
+	if out, _ := m.plainRun(s, `[ -e `+dir+`/.done ] && echo YES`); strings.Contains(out, "YES") {
+		if progress != nil {
+			progress(1)
+		}
+		return m.sliceKeys(s, dir)
+	}
+	span := endMs - startMs
+	if span <= 0 {
+		span = 1
+	}
+	// One streaming pass: route each frame to `gzip -c > H<hour>.ndjson.gz`,
+	// closing the previous hour's pipe as time advances (frames are monotonic in
+	// t, so a closed hour is never revisited — only one gzip child stays alive).
+	// Every 200k frames print "P|<t>" so Go can report progress; on success drop
+	// a .done marker so we never re-split. Timestamps are the leading NDJSON
+	// field ({"t":<ms>,...}); substr($0,6)+0 reads them with no JSON parser.
+	script := fmt.Sprintf(
+		`sd=%s; f=%s; rm -rf "$sd" 2>/dev/null; mkdir -p "$sd" || exit 3; `+
+			`zcat -f "$f" 2>/dev/null | awk -v d="$sd" '`+
+			`substr($0,1,1)!="{"{next} `+
+			`{ t=substr($0,6)+0; k=int(t/3600000); `+
+			`if(k!=ck){ if(cc!=""){close(cc)} ck=k; cc="gzip -c > \"" d "/H" k ".ndjson.gz\"" } `+
+			`print | cc; n++; if(n%%200000==0){ printf("P|%%d\n",t); fflush() } } `+
+			`END{ if(cc!=""){close(cc)} printf("D|%%d\n",n); fflush() }' && touch "$sd/.done" && echo OK`,
+		dir, file)
+
+	sess, err := s.client.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	defer sess.Close()
+	stdout, err := sess.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := sess.Start("bash -c " + shellQuote(script)); err != nil {
+		return nil, err
+	}
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 0, 8*1024), 1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if strings.HasPrefix(line, "P|") && progress != nil {
+			if t, e := strconv.ParseInt(line[2:], 10, 64); e == nil {
+				pct := float64(t-startMs) / float64(span)
+				if pct < 0 {
+					pct = 0
+				}
+				if pct > 0.99 {
+					pct = 0.99
+				}
+				progress(pct)
+			}
+		}
+	}
+	if err := sess.Wait(); err != nil {
+		return nil, fmt.Errorf("시간별 분할 실패: %w", err)
+	}
+	if progress != nil {
+		progress(1)
+	}
+	return m.sliceKeys(s, dir)
+}
+
+// DownloadScheduledSlices loads the frames in [startMs, endMs) by decompressing
+// ONLY the hourly slices that window overlaps — so a window at the end of a
+// recording is as fast as one at the start. Requires PrepareScheduledSlices to
+// have run. Frames are decimated to at most maxFrames.
+func (m *Manager) DownloadScheduledSlices(hostID, id string, startMs, endMs int64, intervalSec, maxFrames int) ([]Frame, int, error) {
+	s := m.get(hostID)
+	if s == nil {
+		return nil, 0, fmt.Errorf("호스트가 연결되어 있지 않습니다")
+	}
+	if endMs <= startMs {
+		return nil, 0, fmt.Errorf("잘못된 구간입니다")
+	}
+	if intervalSec < 1 {
+		intervalSec = 1
+	}
+	if maxFrames <= 0 {
+		maxFrames = 6000
+	}
+	file, err := m.resolveRecFile(s, id)
+	if err != nil {
+		return nil, 0, err
+	}
+	dir := sliceDirFor(file)
+	var keyList []string
+	for k := startMs / sliceHourMs; k <= (endMs-1)/sliceHourMs; k++ {
+		keyList = append(keyList, strconv.FormatInt(k, 10))
+	}
+	winFrames := (endMs - startMs) / 1000 / int64(intervalSec)
+	stride := 1
+	if winFrames > int64(maxFrames) {
+		stride = int((winFrames + int64(maxFrames) - 1) / int64(maxFrames))
+	}
+	// zcat only the overlapping hour slices, filter precisely to [a,b), decimate.
+	script := fmt.Sprintf(
+		`sd=%s; for k in %s; do fk="$sd/H$k.ndjson.gz"; [ -e "$fk" ] && zcat -f "$fk" 2>/dev/null; done | `+
+			`awk -v a=%d -v b=%d -v st=%d 'substr($0,1,1)!="{"{next} `+
+			`{ t=substr($0,6)+0; if(t<a)next; if(t>=b)next; if(n%%st==0)print; last=$0; n++ } `+
+			`END{ if(n>0 && (n-1)%%st!=0) print last }' | gzip -c | base64 -w0`,
+		dir, strings.Join(keyList, " "), startMs, endMs, stride)
+	out, err := m.plainRun(s, script)
+	if err != nil {
+		return nil, 0, fmt.Errorf("다운로드 실패: %s", tailLines(out, 2))
+	}
+	b64 := strings.TrimSpace(out)
+	if b64 == "" {
+		return nil, stride, nil
+	}
+	gzBytes, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil, 0, fmt.Errorf("디코드 실패: %w", err)
+	}
+	gzr, err := gzip.NewReader(bytes.NewReader(gzBytes))
+	if err != nil {
+		return nil, 0, fmt.Errorf("gzip 열기 실패: %w", err)
+	}
+	defer gzr.Close()
+	var frames []Frame
+	sc := bufio.NewScanner(gzr)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var fr Frame
+		if json.Unmarshal(line, &fr) == nil {
+			frames = append(frames, fr)
+		}
+	}
+	return frames, stride, nil
+}
+
+// keepAlive sends OpenSSH keepalive requests on client until ctx is cancelled or
+// the peer stops answering (a long, silent host-side download would otherwise be
+// dropped by an idle-timeout sshd).
+func keepAlive(ctx context.Context, client *ssh.Client) {
+	t := time.NewTicker(20 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if _, _, err := client.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+				return
+			}
+		}
+	}
 }
 
 // ---- SSH plumbing ----

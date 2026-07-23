@@ -29,6 +29,10 @@ export function DisconnectMany(arg1:Array<string>):Promise<void>;
 
 export function DownloadScheduledAndPlay(arg1:string,arg2:string):Promise<main.LogMeta>;
 
+export function DownloadScheduledDayAndPlay(arg1:string,arg2:string,arg3:number,arg4:number,arg5:number):Promise<main.LogMeta>;
+
+export function DownloadScheduledSlicesAndPlay(arg1:string,arg2:string,arg3:number,arg4:number,arg5:number):Promise<main.LogMeta>;
+
 export function EstimateScheduled(arg1:string):Promise<monitor.RecEstimate>;
 
 export function GetCurrentVersion():Promise<string>;
@@ -43,7 +47,13 @@ export function ListHosts():Promise<Array<host.Host>>;
 
 export function ListScheduled(arg1:string):Promise<Array<monitor.RecMeta>>;
 
+export function LogFrameAt(arg1:string,arg2:number):Promise<monitor.Frame>;
+
+export function LogFrameCount(arg1:string):Promise<number>;
+
 export function LogFrames(arg1:string):Promise<Array<monitor.Frame>>;
+
+export function LogProcSeries(arg1:string,arg2:number):Promise<Array<record.Point>>;
 
 export function MarkReleaseNotesSeen():Promise<void>;
 
@@ -54,6 +64,8 @@ export function NethogsRollback(arg1:string):Promise<void>;
 export function OpenLogDialog():Promise<main.LogMeta>;
 
 export function PasswordStatus(arg1:string):Promise<monitor.PwStatus>;
+
+export function PrepareScheduledSlices(arg1:string,arg2:string,arg3:number,arg4:number):Promise<Array<number>>;
 
 export function ProcessHistory(arg1:string,arg2:number):Promise<Array<record.Point>>;
 

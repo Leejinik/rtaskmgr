@@ -121,6 +121,7 @@ export namespace main {
 	export class LogMeta {
 	    path: string;
 	    hosts: LogHostInfo[];
+	    stride: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new LogMeta(source);
@@ -130,6 +131,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.path = source["path"];
 	        this.hosts = this.convertValues(source["hosts"], LogHostInfo);
+	        this.stride = source["stride"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -418,6 +420,8 @@ export namespace monitor {
 	    intervalSec: number;
 	    status: string;
 	    sizeBytes: number;
+	    lastT: number;
+	    doneReason: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new RecMeta(source);
@@ -435,6 +439,8 @@ export namespace monitor {
 	        this.intervalSec = source["intervalSec"];
 	        this.status = source["status"];
 	        this.sizeBytes = source["sizeBytes"];
+	        this.lastT = source["lastT"];
+	        this.doneReason = source["doneReason"];
 	    }
 	}
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { record } from "../../wailsjs/go/models";
-import { ProcessHistory } from "../../wailsjs/go/main/App";
-import { Proc, Frame } from "../types";
+import { ProcessHistory, LogProcSeries } from "../../wailsjs/go/main/App";
+import { Proc } from "../types";
 import { pct, mib, bytesRate } from "../format";
 import Sparkline from "./Sparkline";
 
@@ -9,31 +9,24 @@ interface Props {
   hostId: string;
   pid: number;
   current?: Proc; // latest row for the header line
-  frames?: Frame[]; // when set, build the timeline from this log (playback) instead of live
+  logMode?: boolean; // playback: build the timeline once from the opened log (server-side)
   onClose: () => void;
 }
 
 // DetailModal shows a process's 1-second CPU/Memory/Disk timeline. Live mode
-// refreshes from the in-memory ring each second; playback mode builds it once
-// from the opened log's frames.
-export default function DetailModal({ hostId, pid, current, frames, onClose }: Props) {
+// refreshes from the in-memory ring each second; playback mode fetches the whole
+// per-process series from the opened log server-side (the renderer never holds
+// every frame's process list).
+export default function DetailModal({ hostId, pid, current, logMode, onClose }: Props) {
   const [hist, setHist] = useState<record.Point[]>([]);
 
   useEffect(() => {
-    if (frames) {
-      const pts = frames
-        .map((f) => {
-          const p = f.procs.find((x) => x.pid === pid);
-          return p
-            ? record.Point.createFrom({
-                t: f.t, cpu: p.cpu, memPct: p.memPct,
-                rssKiB: p.rssKiB, diskR: p.diskR, diskW: p.diskW,
-              })
-            : null;
-        })
-        .filter((x): x is record.Point => x !== null);
-      setHist(pts);
-      return;
+    if (logMode) {
+      let live = true;
+      LogProcSeries(hostId, pid)
+        .then((h) => { if (live) setHist(h ?? []); })
+        .catch(() => {});
+      return () => { live = false; };
     }
     let live = true;
     const pull = async () => {
@@ -50,7 +43,7 @@ export default function DetailModal({ hostId, pid, current, frames, onClose }: P
       live = false;
       clearInterval(t);
     };
-  }, [hostId, pid, frames]);
+  }, [hostId, pid, logMode]);
 
   const times = hist.map((p) => p.t);
   const cpu = hist.map((p) => p.cpu);

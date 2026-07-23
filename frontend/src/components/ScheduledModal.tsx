@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { monitor, main } from "../../wailsjs/go/models";
 import {
   StartScheduled, ListScheduled, StopScheduled, DeleteScheduled,
-  DownloadScheduledAndPlay, EstimateScheduled,
+  PrepareScheduledSlices, DownloadScheduledSlicesAndPlay, EstimateScheduled,
 } from "../../wailsjs/go/main/App";
+import { EventsOn } from "../../wailsjs/runtime";
 
 interface Props {
   hostId: string;
@@ -25,6 +26,64 @@ const fmtSize = (b: number) => {
 const fmtTime = (t: number) =>
   t > 0 ? new Date(t).toLocaleString("ko-KR", { hour12: false }) : "—";
 
+// How each recording ended → label, icon and colour. "interrupted" is the
+// important one: the sampler died without writing its .done marker (server
+// reboot / OOM / SIGKILL), so the capture stops early and is truncated.
+const STATUS_UI: Record<string, { label: string; icon: string; color: string }> = {
+  running:     { label: "기록 중",       icon: "●", color: "var(--good)" },
+  done:        { label: "완료",          icon: "■", color: "var(--text-dim)" },
+  stopped:     { label: "사용자 중지",   icon: "⏹", color: "var(--text-dim)" },
+  "low-disk":  { label: "디스크 부족 중단", icon: "⚠", color: "var(--warn, #d8b450)" },
+  interrupted: { label: "비정상 종료",   icon: "⚠", color: "var(--bad)" },
+};
+const statusUI = (s: string) =>
+  STATUS_UI[s] ?? { label: s || "완료", icon: "■", color: "var(--text-dim)" };
+
+// Format an elapsed span (ms) as "N일 N시간 N분" for the "cut short by" hint.
+const fmtSpan = (ms: number) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  return [d && `${d}일`, h && `${h}시간`, (m || (!d && !h)) && `${m}분`].filter(Boolean).join(" ");
+};
+
+const WD = ["일", "월", "화", "수", "목", "금", "토"];
+const HOUR_MS = 3600000;
+
+// The recording's actual data-end (running → now; else last write or plan).
+const recEnd = (r: monitor.RecMeta) =>
+  r.status === "running" ? Date.now() : r.lastT > 0 ? r.lastT : r.plannedEndT;
+
+// Next local midnight after ms (DST-safe).
+const nextMidnight = (ms: number) => {
+  const d = new Date(ms); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + 1);
+  return d.getTime();
+};
+
+// Per-recording hourly-slice index state (built once on the host, then cached).
+interface SliceState { keys: number[] | null; pct: number; loading: boolean; err?: string; }
+
+interface DayGroup { dayStart: number; label: string; hourKeys: number[]; }
+
+// Group epoch-hour slice keys (floor(t/3600000)) into local calendar days.
+const groupByDay = (keys: number[]): DayGroup[] => {
+  const map = new Map<number, number[]>();
+  for (const k of keys) {
+    const d = new Date(k * HOUR_MS); d.setHours(0, 0, 0, 0);
+    const ds = d.getTime();
+    (map.get(ds) ?? map.set(ds, []).get(ds)!).push(k);
+  }
+  return [...map.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([ds, hk]) => {
+      const d = new Date(ds);
+      return {
+        dayStart: ds,
+        label: `${d.getMonth() + 1}/${d.getDate()}(${WD[d.getDay()]})`,
+        hourKeys: hk.sort((a, b) => a - b),
+      };
+    });
+};
+
 export default function ScheduledModal({ hostId, hostName, onClose, onPlay }: Props) {
   const [list, setList] = useState<monitor.RecMeta[]>([]);
   const [days, setDays] = useState(0);
@@ -32,11 +91,15 @@ export default function ScheduledModal({ hostId, hostName, onClose, onPlay }: Pr
   const [minutes, setMinutes] = useState(10);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [info, setInfo] = useState("");
 
   const [est, setEst] = useState<monitor.RecEstimate | null>(null);
   const [estBusy, setEstBusy] = useState(false);
   const [target, setTarget] = useState("");
   const [recInterval, setRecInterval] = useState(1); // recording cadence (s)
+  const [openRecs, setOpenRecs] = useState<Set<string>>(new Set());   // recordings expanded to day list
+  const [openHourDays, setOpenHourDays] = useState<Set<string>>(new Set()); // "recId:dayStart" expanded to hours
+  const [slices, setSlices] = useState<Record<string, SliceState>>({});     // per-recording hourly index
 
   const refresh = async () => {
     try {
@@ -98,10 +161,54 @@ export default function ScheduledModal({ hostId, hostName, onClose, onPlay }: Pr
     }
   }
 
-  async function play(id: string) {
-    setBusy(true); setErr("");
+  // Stream split-progress (0..1) for the recording currently being indexed.
+  useEffect(() => {
+    const off = EventsOn("recSplit", (p: any) => {
+      if (!p?.id) return;
+      setSlices((s) => (s[p.id] ? { ...s, [p.id]: { ...s[p.id], pct: Number(p.pct) || 0 } } : s));
+    });
+    return () => off();
+  }, []);
+
+  // Build the hourly slice index for a recording on the host (once). Subsequent
+  // window loads read only the overlapping slices, so any hour opens in seconds.
+  async function prepare(r: monitor.RecMeta) {
+    const cur = slices[r.id];
+    if (cur?.loading || cur?.keys) return; // already indexing or indexed
+    setSlices((s) => ({ ...s, [r.id]: { keys: null, pct: 0, loading: true } }));
     try {
-      const meta = await DownloadScheduledAndPlay(hostId, id);
+      const keys = await PrepareScheduledSlices(hostId, r.id, r.startT, recEnd(r));
+      setSlices((s) => ({ ...s, [r.id]: { keys: keys ?? [], pct: 1, loading: false } }));
+    } catch (e: any) {
+      setSlices((s) => ({ ...s, [r.id]: { keys: null, pct: 0, loading: false, err: String(e) } }));
+    }
+  }
+
+  function toggleRec(r: monitor.RecMeta) {
+    setOpenRecs((prev) => {
+      const next = new Set(prev);
+      if (next.has(r.id)) next.delete(r.id);
+      else { next.add(r.id); void prepare(r); }
+      return next;
+    });
+  }
+
+  function toggleHourDay(key: string) {
+    setOpenHourDays((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  }
+
+  // Play a [startMs, endMs) window from the prebuilt hourly slices.
+  async function playSlice(r: monitor.RecMeta, startMs: number, endMs: number, label: string) {
+    setBusy(true); setErr(""); setInfo("");
+    try {
+      const meta = await DownloadScheduledSlicesAndPlay(hostId, r.id, startMs, endMs, r.intervalSec || 1);
+      if (meta.stride && meta.stride > 1) {
+        setInfo(`${label} — ${meta.stride}프레임당 1개로 다운샘플 (해상도 축소).`);
+      }
       onPlay(meta);
     } catch (e: any) {
       setErr(String(e));
@@ -244,6 +351,9 @@ export default function ScheduledModal({ hostId, hostName, onClose, onPlay }: Pr
         </div>
 
         <div className="err">{err}</div>
+        {info && (
+          <div style={{ color: "var(--warn, #d8b450)", fontSize: 12, margin: "2px 0 6px" }}>{info}</div>
+        )}
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "6px 0" }}>
           <b style={{ fontSize: 13 }}>기록 목록</b>
@@ -266,27 +376,135 @@ export default function ScheduledModal({ hostId, hostName, onClose, onPlay }: Pr
                 </tr>
               </thead>
               <tbody>
-                {list.map((r) => (
-                  <tr key={r.id}>
+                {list.map((r) => {
+                  const st = statusUI(r.status);
+                  const interrupted = r.status === "interrupted";
+                  // How much earlier than planned it stopped (only meaningful
+                  // when it ended abnormally and we know the last-write time).
+                  const cutShort =
+                    interrupted && r.lastT > 0 && r.plannedEndT > r.lastT
+                      ? r.plannedEndT - r.lastT
+                      : 0;
+                  const open = openRecs.has(r.id);
+                  const sl = slices[r.id];
+                  const dayGroups = sl?.keys ? groupByDay(sl.keys) : [];
+                  return (
+                  <Fragment key={r.id}>
+                  <tr>
                     <td className="left">
-                      <span style={{ color: r.status === "running" ? "var(--good)" : "var(--text-dim)" }}>
-                        {r.status === "running" ? "● 기록 중" : "■ 완료"}
+                      <span style={{ color: st.color, fontWeight: interrupted ? 600 : 400 }}>
+                        {st.icon} {st.label}
                       </span>
                     </td>
                     <td className="left" style={{ fontSize: 11, color: "var(--text-dim)" }}>
                       {fmtTime(r.startT)} ~ {fmtTime(r.plannedEndT)}
                       {r.intervalSec ? ` · ${r.intervalSec}초 간격` : ""}
+                      {interrupted && (
+                        <div style={{ color: "var(--bad)", marginTop: 3 }}>
+                          ⚠ 예정보다 일찍 끊김 — 마지막 기록 <b>{fmtTime(r.lastT)}</b>
+                          {cutShort > 0 ? ` (약 ${fmtSpan(cutShort)} 조기 종료)` : ""}
+                          <div style={{ color: "var(--text-mute)", fontWeight: 400 }}>
+                            서버 재부팅·강제종료 등으로 기록이 중단되었습니다. 이 시점까지의 데이터만 재생됩니다.
+                          </div>
+                        </div>
+                      )}
+                      {r.status === "low-disk" && (
+                        <div style={{ color: "var(--warn, #d8b450)", marginTop: 3 }}>
+                          디스크 여유공간 부족으로 자동 중단 — 마지막 기록 <b>{fmtTime(r.lastT)}</b>
+                        </div>
+                      )}
                     </td>
                     <td>{fmtSize(r.sizeBytes)}</td>
                     <td className="left">
-                      <button className="toolbtn" onClick={() => play(r.id)} disabled={busy}>재생</button>{" "}
+                      <button className="toolbtn" onClick={() => toggleRec(r)} disabled={busy}>
+                        📅 시간별 재생 {open ? "▴" : "▾"}
+                      </button>{" "}
                       {r.status === "running" && (
                         <button className="toolbtn" onClick={() => stop(r.id)} disabled={busy}>중지</button>
                       )}{" "}
                       <button className="toolbtn" onClick={() => remove(r.id)} disabled={busy}>삭제</button>
                     </td>
                   </tr>
-                ))}
+
+                  {/* --- indexing progress / error --- */}
+                  {open && sl?.loading && (
+                    <tr style={{ background: "var(--row-sel, rgba(255,255,255,0.03))" }}>
+                      <td colSpan={4} style={{ fontSize: 11, color: "var(--text-dim)", padding: "6px 10px" }}>
+                        시간별 조각 만드는 중… <b>{Math.round((sl.pct ?? 0) * 100)}%</b>
+                        <div style={{ marginTop: 4, height: 5, background: "var(--border)", borderRadius: 3, overflow: "hidden" }}>
+                          <div style={{ width: `${Math.round((sl.pct ?? 0) * 100)}%`, height: "100%", background: "var(--good)", transition: "width .2s" }} />
+                        </div>
+                        <div style={{ color: "var(--text-mute)", marginTop: 3 }}>
+                          첫 준비만 전체를 한 번 훑습니다. 이후엔 어느 시간대든 즉시 열립니다.
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  {open && sl?.err && (
+                    <tr style={{ background: "var(--row-sel, rgba(255,255,255,0.03))" }}>
+                      <td colSpan={3} className="left" style={{ fontSize: 11, color: "var(--bad)", padding: "6px 10px" }}>
+                        분할 실패: {sl.err}
+                      </td>
+                      <td className="left">
+                        <button className="toolbtn" onClick={() => prepare(r)} disabled={busy}>다시 시도</button>
+                      </td>
+                    </tr>
+                  )}
+                  {open && sl?.keys && dayGroups.length === 0 && (
+                    <tr style={{ background: "var(--row-sel, rgba(255,255,255,0.03))" }}>
+                      <td colSpan={4} style={{ fontSize: 11, color: "var(--text-mute)", padding: "6px 10px" }}>
+                        재생할 데이터가 없습니다.
+                      </td>
+                    </tr>
+                  )}
+
+                  {/* --- day → hour tree --- */}
+                  {open && sl?.keys && dayGroups.map((d) => {
+                    const dayKey = r.id + ":" + d.dayStart;
+                    const hoursOpen = openHourDays.has(dayKey);
+                    const dayEnd = nextMidnight(d.dayStart);
+                    return (
+                    <Fragment key={dayKey}>
+                      <tr style={{ background: "var(--row-sel, rgba(255,255,255,0.04))" }}>
+                        <td className="left" colSpan={2} style={{ fontSize: 11, paddingLeft: 12 }}>
+                          <span
+                            onClick={() => toggleHourDay(dayKey)}
+                            style={{ cursor: "pointer", userSelect: "none", fontWeight: 600 }}>
+                            {hoursOpen ? "▾" : "▸"} {d.label}
+                          </span>
+                          <span style={{ color: "var(--text-mute)", marginLeft: 6 }}>· {d.hourKeys.length}시간</span>
+                        </td>
+                        <td />
+                        <td className="left">
+                          <button className="toolbtn" onClick={() => playSlice(r, d.dayStart, dayEnd, d.label)} disabled={busy}>
+                            그 날 전체
+                          </button>
+                        </td>
+                      </tr>
+                      {hoursOpen && d.hourKeys.map((k) => {
+                        const hs = k * HOUR_MS;
+                        const hh = new Date(hs).getHours();
+                        const label = `${d.label} ${String(hh).padStart(2, "0")}시`;
+                        return (
+                          <tr key={dayKey + ":" + k}>
+                            <td className="left" style={{ fontSize: 11, color: "var(--text-mute)", paddingLeft: 30 }}>
+                              └ {String(hh).padStart(2, "0")}시
+                            </td>
+                            <td className="left" colSpan={2} style={{ fontSize: 11, color: "var(--text-dim)" }}>
+                              {String(hh).padStart(2, "0")}:00 ~ {String((hh + 1) % 24).padStart(2, "0")}:00
+                            </td>
+                            <td className="left">
+                              <button className="toolbtn" onClick={() => playSlice(r, hs, hs + HOUR_MS, label)} disabled={busy}>재생</button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </Fragment>
+                    );
+                  })}
+                  </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           )}

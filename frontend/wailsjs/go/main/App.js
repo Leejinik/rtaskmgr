@@ -46,6 +46,14 @@ export function DownloadScheduledAndPlay(arg1, arg2) {
   return window['go']['main']['App']['DownloadScheduledAndPlay'](arg1, arg2);
 }
 
+export function DownloadScheduledDayAndPlay(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['DownloadScheduledDayAndPlay'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function DownloadScheduledSlicesAndPlay(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['DownloadScheduledSlicesAndPlay'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function EstimateScheduled(arg1) {
   return window['go']['main']['App']['EstimateScheduled'](arg1);
 }
@@ -74,8 +82,20 @@ export function ListScheduled(arg1) {
   return window['go']['main']['App']['ListScheduled'](arg1);
 }
 
+export function LogFrameAt(arg1, arg2) {
+  return window['go']['main']['App']['LogFrameAt'](arg1, arg2);
+}
+
+export function LogFrameCount(arg1) {
+  return window['go']['main']['App']['LogFrameCount'](arg1);
+}
+
 export function LogFrames(arg1) {
   return window['go']['main']['App']['LogFrames'](arg1);
+}
+
+export function LogProcSeries(arg1, arg2) {
+  return window['go']['main']['App']['LogProcSeries'](arg1, arg2);
 }
 
 export function MarkReleaseNotesSeen() {
@@ -96,6 +116,10 @@ export function OpenLogDialog() {
 
 export function PasswordStatus(arg1) {
   return window['go']['main']['App']['PasswordStatus'](arg1);
+}
+
+export function PrepareScheduledSlices(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['PrepareScheduledSlices'](arg1, arg2, arg3, arg4);
 }
 
 export function ProcessHistory(arg1, arg2) {

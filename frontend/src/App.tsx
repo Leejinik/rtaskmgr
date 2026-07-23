@@ -5,7 +5,7 @@ import {
   ConnectMany, DisconnectMany,
   StartRecording, StopRecording,
   NethogsInstall, NethogsRollback,
-  OpenLogDialog, LogFrames,
+  OpenLogDialog, LogFrameAt,
   KillProcess,
   ServiceAction,
   PwConfig, RenewPasswords,
@@ -34,10 +34,15 @@ import { PwInfo, isUrgent, pwTooltip, expLabel } from "./pw";
 interface Playback {
   meta: main.LogMeta;
   hostId: string;
-  frames: Frame[];
+  count: number;        // total frames for this host (from meta)
   index: number;
+  frame: Frame | null;  // current frame, loaded on demand (never hold them all)
   playing: boolean;
 }
+
+// Frame count for a host from the log meta.
+const hostFrameCount = (meta: main.LogMeta, hostId: string) =>
+  meta.hosts?.find((h) => h.id === hostId)?.frames ?? 0;
 
 const basename = (p: string) => p.split(/[\\/]/).pop() || p;
 import "./taskmgr.css";
@@ -333,18 +338,35 @@ export default function App() {
       const meta = await OpenLogDialog();
       if (!meta || !meta.hosts || meta.hosts.length === 0) return;
       const hostId = meta.hosts[0].id;
-      const frames = (await LogFrames(hostId)) ?? [];
       setDetailPid(null);
-      setPlayback({ meta, hostId, frames, index: 0, playing: false });
+      setPlayback({ meta, hostId, count: hostFrameCount(meta, hostId), index: 0, frame: null, playing: false });
     } catch (e: any) {
       showToast(`로그 열기 실패: ${e}`);
     }
   }
 
-  async function selectLogHost(hostId: string) {
-    const frames = (await LogFrames(hostId)) ?? [];
-    setPlayback((p) => (p ? { ...p, hostId, frames, index: 0, playing: false } : p));
+  function selectLogHost(hostId: string) {
+    setPlayback((p) =>
+      p ? { ...p, hostId, count: hostFrameCount(p.meta, hostId), index: 0, frame: null, playing: false } : p
+    );
   }
+
+  // Load the current frame on demand whenever the host or index changes. Frames
+  // live in Go memory; we never copy the whole capture into the renderer (that
+  // OOMs the WebView on a busy host). The previous frame stays visible until the
+  // new one arrives, so scrubbing/playback don't flash empty.
+  useEffect(() => {
+    if (!playback) return;
+    const { hostId, index } = playback;
+    let live = true;
+    LogFrameAt(hostId, index)
+      .then((f) => {
+        if (live) setPlayback((p) => (p && p.hostId === hostId && p.index === index ? { ...p, frame: f } : p));
+      })
+      .catch(() => {});
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playback?.hostId, playback?.index]);
 
   // advance frames while playing
   useEffect(() => {
@@ -352,7 +374,7 @@ export default function App() {
     const t = window.setInterval(() => {
       setPlayback((p) => {
         if (!p) return p;
-        if (p.index >= p.frames.length - 1) return { ...p, playing: false };
+        if (p.index >= p.count - 1) return { ...p, playing: false };
         return { ...p, index: p.index + 1 };
       });
     }, 1000);
@@ -666,7 +688,7 @@ export default function App() {
 
   // ---- playback screen (log reader) ----
   if (playback) {
-    const pf = playback.frames[playback.index];
+    const pf = playback.frame;
     const pbDetail =
       pf && detailPid != null ? pf.procs.find((p) => p.pid === detailPid) : undefined;
     return (
@@ -675,7 +697,7 @@ export default function App() {
           meta={playback.meta}
           hostId={playback.hostId}
           index={playback.index}
-          total={playback.frames.length}
+          total={playback.count}
           playing={playback.playing}
           currentT={pf?.t ?? 0}
           onHost={selectLogHost}
@@ -684,7 +706,7 @@ export default function App() {
           onStep={(d) =>
             setPlayback((p) =>
               p
-                ? { ...p, playing: false, index: Math.min(p.frames.length - 1, Math.max(0, p.index + d)) }
+                ? { ...p, playing: false, index: Math.min(p.count - 1, Math.max(0, p.index + d)) }
                 : p
             )
           }
@@ -730,7 +752,7 @@ export default function App() {
             hostId={playback.hostId}
             pid={detailPid}
             current={pbDetail}
-            frames={playback.frames}
+            logMode
             onClose={() => setDetailPid(null)}
           />
         )}
@@ -1085,10 +1107,8 @@ export default function App() {
             setSchedOpen(false);
             const hid = meta.hosts?.[0]?.id;
             if (hid) {
-              LogFrames(hid).then((frames) => {
-                setDetailPid(null);
-                setPlayback({ meta, hostId: hid, frames: frames ?? [], index: 0, playing: false });
-              });
+              setDetailPid(null);
+              setPlayback({ meta, hostId: hid, count: hostFrameCount(meta, hid), index: 0, frame: null, playing: false });
             }
           }}
         />
