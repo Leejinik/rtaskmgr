@@ -1257,6 +1257,7 @@ func (m *Manager) DownloadScheduled(hostID, id string, maxFrames int) ([]Frame, 
 			frames = append(frames, f)
 		}
 	}
+	markProcNetUnavailable(frames)
 	return frames, stride, nil
 }
 
@@ -1336,7 +1337,22 @@ func (m *Manager) DownloadScheduledDay(hostID, id string, startMs, endMs int64, 
 			frames = append(frames, fr)
 		}
 	}
+	markProcNetUnavailable(frames)
 	return frames, stride, nil
+}
+
+// markProcNetUnavailable flags every process's network as N/A (-1) for scheduled
+// recordings. The detached sampler is a zero-dependency /proc reader and never
+// captures per-process traffic — that needs nethogs' packet capture (pcap+root),
+// which only the LIVE view overlays onto frames. The sampler's NDJSON has no
+// "net" field, so it unmarshals to 0; without this the playback UI would show a
+// misleading "0 B/s" instead of "—" (not measured).
+func markProcNetUnavailable(frames []Frame) {
+	for i := range frames {
+		for j := range frames[i].Procs {
+			frames[i].Procs[j].Net = -1
+		}
+	}
 }
 
 // ---- hourly slice index (bounded per-window playback) ----
@@ -1517,6 +1533,7 @@ func (m *Manager) DownloadScheduledSlices(hostID, id string, startMs, endMs int6
 			frames = append(frames, fr)
 		}
 	}
+	markProcNetUnavailable(frames)
 	return frames, stride, nil
 }
 
