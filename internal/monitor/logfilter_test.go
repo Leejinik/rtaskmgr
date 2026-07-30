@@ -97,6 +97,22 @@ func TestFilenameCoverageConventions(t *testing.T) {
 		t.Error("hourly end must come from mtime, not from the name (rollover is lazy)")
 	}
 
+	// zookeeper puts the date in the MIDDLE with .log at the end. Verified on a live
+	// host: zookeeper-2026-07-23.log had an mtime six days later, so the name is the
+	// start of the coverage and only a lower bound.
+	cov = filenameCoverage("zookeeper-2026-07-20.log", mtime, 0, loc)
+	if cov.FirstMs != day(2026, 7, 20) {
+		t.Errorf("zookeeper start = %v, want 07-20", time.UnixMilli(cov.FirstMs))
+	}
+	if cov.LastMs != mtime {
+		t.Error("zookeeper end must come from mtime (a 'daily' file spanned six days on a real host)")
+	}
+	// Its compressed sibling names the same day.
+	cov = filenameCoverage("zookeeper-2026-07-20.log.gz", mtime, 0, loc)
+	if cov.FirstMs != day(2026, 7, 20) {
+		t.Errorf("zookeeper .gz start = %v, want 07-20", time.UnixMilli(cov.FirstMs))
+	}
+
 	// No date in the name at all: start unknown, so it can never be skipped as "too new".
 	cov = filenameCoverage("kafkaServer.out", mtime, 0, loc)
 	if cov.FirstMs != 0 || cov.LastMs != mtime {

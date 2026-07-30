@@ -141,6 +141,11 @@ var (
 	dateExtRe = regexp.MustCompile(`-(\d{4})(\d{2})(\d{2})(?:\.gz)?$`)
 	// log4j1 hourly rotation (kafka): "server.log.2026-06-30-14".
 	hourlyRe = regexp.MustCompile(`\.log\.(\d{4})-(\d{2})-(\d{2})-(\d{2})$`)
+	// zookeeper's shipped rollover puts the date in the middle, with .log at the end:
+	// "zookeeper-2026-07-20.log", "zookeeper-2026-07-20.log.gz". Verified on a live
+	// host, where zookeeper-2026-07-23.log had an mtime six days later — so this date
+	// is the START of the coverage and, like log4j, only a lower bound.
+	midDateRe = regexp.MustCompile(`-(\d{4})-(\d{2})-(\d{2})\.log(?:\.gz)?$`)
 )
 
 // filenameCoverage reads what a filename claims about its content.
@@ -164,6 +169,11 @@ func filenameCoverage(name string, mtimeMs, prevRotationMs int64, loc *time.Loca
 		return LogCoverage{FirstMs: start.UnixMilli(), LastMs: mtimeMs}
 	}
 	if m := log4jDateRe.FindStringSubmatch(base); m != nil {
+		y, mo, d := atoi(m[1]), atoi(m[2]), atoi(m[3])
+		start := time.Date(y, time.Month(mo), d, 0, 0, 0, 0, loc)
+		return LogCoverage{FirstMs: start.UnixMilli(), LastMs: mtimeMs}
+	}
+	if m := midDateRe.FindStringSubmatch(base); m != nil {
 		y, mo, d := atoi(m[1]), atoi(m[2]), atoi(m[3])
 		start := time.Date(y, time.Month(mo), d, 0, 0, 0, 0, loc)
 		return LogCoverage{FirstMs: start.UnixMilli(), LastMs: mtimeMs}
@@ -270,7 +280,7 @@ func hostRangeKeys(fromMs, toMs int64, tz string) string {
 // year on any month rollback, so a file spanning New Year still compares correctly.
 func seedYearFor(name string, mtimeMs int64, loc *time.Location) int {
 	base := path.Base(name)
-	for _, re := range []*regexp.Regexp{hourlyRe, log4jDateRe, dateExtRe} {
+	for _, re := range []*regexp.Regexp{hourlyRe, log4jDateRe, midDateRe, dateExtRe} {
 		if m := re.FindStringSubmatch(base); m != nil {
 			if y := atoi(m[1]); y > 1970 {
 				return y

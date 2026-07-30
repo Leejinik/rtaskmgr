@@ -141,12 +141,20 @@ func defaultLogCatalog() LogCatalog {
 					// /var/log/messages is mode 0600 root:root on RHEL — the login user
 					// cannot read it at all, so this module is root-only by nature.
 					{Name: "keepalived", Paths: []string{"/var/log/messages"}, NeedsRoot: true},
-					{Name: "zookeeper", Paths: []string{"/data/zookeeper-log"}},
+					// Verified on a live host: the rotated files are root-only
+					// (-rw------- root:root), so this cannot be surveyed unprivileged.
+					{Name: "zookeeper", Paths: []string{"/data/zookeeper-log"}, NeedsRoot: true},
 					{Name: "kafka", Paths: []string{"/data/kafka-log"}},
-					// redis and redis-sentinel share a directory; the filename splits them.
-					{Name: "redis", Paths: []string{"/usr/local/liz/redis/logs"}, Match: "redis*"},
-					{Name: "redis-sentinel", Paths: []string{"/usr/local/liz/redis/logs"}, Match: "sentinel*"},
-					{Name: "mariadb", Paths: []string{"/data/mariadb-log"}},
+					// redis and redis-sentinel share a directory, and the sentinel's file is
+					// "redis-sentinel.log" — so a "redis*" match swallows BOTH and a
+					// "sentinel*" match finds nothing. The patterns have to be disjoint on
+					// the real filenames, which is what TestRedisSentinelMatchesAreDisjoint
+					// pins.
+					{Name: "redis", Paths: []string{"/usr/local/liz/redis/logs"}, Match: "redis.log*"},
+					{Name: "redis-sentinel", Paths: []string{"/usr/local/liz/redis/logs"}, Match: "redis-sentinel*"},
+					// /data/mariadb-log is drwxr-x--- mysql:mysql and mariadb.err is
+					// -rw-rw---- mysql:mysql — unreadable by the login user.
+					{Name: "mariadb", Paths: []string{"/data/mariadb-log"}, NeedsRoot: true},
 					{Name: "clickhouse-server", Paths: []string{"/data/clickhouse/logs"}},
 				},
 			},

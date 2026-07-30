@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"path"
 	"strings"
 	"testing"
 	"time"
@@ -431,11 +432,57 @@ func TestVarLogExclusions(t *testing.T) {
 	}
 }
 
-// The modules whose files are 0600 root:root must be marked, so the tree can say
-// "root 권한 필요" instead of showing them as unreadable.
+// redis and redis-sentinel share /usr/local/liz/redis/logs, and the sentinel's file
+// is "redis-sentinel.log" — so a "redis*" pattern swallows both and leaves the
+// sentinel row empty. Verified against the real filenames on a live host.
+func TestRedisSentinelMatchesAreDisjoint(t *testing.T) {
+	var redis, sentinel LogModuleDef
+	for _, c := range defaultLogCatalog().Categories {
+		for _, m := range c.Modules {
+			switch m.Name {
+			case "redis":
+				redis = m
+			case "redis-sentinel":
+				sentinel = m
+			}
+		}
+	}
+	if redis.Match == "" || sentinel.Match == "" {
+		t.Fatal("both redis rows need a filename filter")
+	}
+	// The real filenames, plus plausible rotations of each.
+	cases := map[string]string{
+		"redis.log":             "redis",
+		"redis.log.1":           "redis",
+		"redis.log-20260730.gz": "redis",
+		"redis-sentinel.log":    "redis-sentinel",
+		"redis-sentinel.log.1":  "redis-sentinel",
+	}
+	for name, want := range cases {
+		mr, _ := path.Match(redis.Match, name)
+		ms, _ := path.Match(sentinel.Match, name)
+		if mr && ms {
+			t.Errorf("%q matches both patterns — it would be collected twice", name)
+		}
+		got := ""
+		if mr {
+			got = "redis"
+		} else if ms {
+			got = "redis-sentinel"
+		}
+		if got != want {
+			t.Errorf("%q matched %q, want %q (redis=%q sentinel=%q)", name, got, want, redis.Match, sentinel.Match)
+		}
+	}
+}
+
+// The modules whose files are root-only must be marked, so the tree can say
+// "root 권한 필요" instead of showing them as unreadable. Each of these was verified
+// on a live host: /var/log/messages is 0600 root:root, /data/mariadb-log is
+// drwxr-x--- mysql:mysql, and zookeeper's rotated files are -rw------- root:root.
 func TestRootOnlyModulesMarked(t *testing.T) {
 	cat := defaultLogCatalog()
-	need := map[string]bool{"keepalived": false, "var-log": false}
+	need := map[string]bool{"keepalived": false, "var-log": false, "mariadb": false, "zookeeper": false}
 	for _, c := range cat.Categories {
 		for _, m := range c.Modules {
 			if _, ok := need[m.Name]; ok {
