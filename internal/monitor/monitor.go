@@ -198,6 +198,10 @@ type session struct {
 	uid          int    // login uid from the probe (numeric owner for capture files)
 	rhelMajor    string
 
+	// jumps are the upstream clients this session's connection is tunnelled
+	// through, outermost first. They must be closed with the session.
+	jumps []*ssh.Client
+
 	capMu     sync.Mutex
 	capSnap   map[string]capLite // last capture snapshot seen by the session watcher
 	capSeeded bool
@@ -257,7 +261,9 @@ type Manager struct {
 	onStatus  StatusFunc
 	onNethogs NethogsFunc
 	onCapture CaptureFunc
-	rpmFS     fs.FS // embedded offline RPM bundle (rpms/rhel8, rpms/rhel9)
+	// resolveHost follows a host's JumpHostID chain. Set via SetHostResolver.
+	resolveHost HostResolver
+	rpmFS       fs.FS // embedded offline RPM bundle (rpms/rhel8, rpms/rhel9)
 }
 
 func NewManager(onFrame FrameFunc, onStatus StatusFunc, onNethogs NethogsFunc, onCapture CaptureFunc, rpmFS fs.FS) *Manager {
@@ -305,24 +311,45 @@ func clampInterval(sec int) int {
 // the probed capabilities. Any existing session for the same host is replaced.
 func (m *Manager) Start(parent context.Context, h host.Host, intervalSec int) (Capabilities, error) {
 	m.Stop(h.ID)
-	m.status(h.ID, "connecting", h.Addr)
 
-	client, err := dial(h)
+	paths, err := jumpPaths(h, m.resolveHost)
 	if err != nil {
 		m.status(h.ID, "error", err.Error())
 		return Capabilities{}, err
+	}
+	detail := h.Addr
+	if via := pathLabel(paths[0]); via != "" {
+		detail = fmt.Sprintf("%s (경유: %s)", h.Addr, via)
+	}
+	m.status(h.ID, "connecting", detail)
+
+	client, jumps, via, err := dialWithFallback(paths)
+	if err != nil {
+		m.status(h.ID, "error", err.Error())
+		return Capabilities{}, err
+	}
+	if via != "" {
+		// Report the route that actually worked — with fallback it may not be the
+		// first one we announced.
+		m.status(h.ID, "connecting", fmt.Sprintf("%s (경유: %s)", h.Addr, via))
+	}
+	closeAll := func() {
+		client.Close()
+		for _, c := range jumps {
+			c.Close()
+		}
 	}
 
 	m.status(h.ID, "probing", "")
 	caps, err := probe(client, h.Password)
 	if err != nil {
-		client.Close()
+		closeAll()
 		m.status(h.ID, "error", "probe: "+err.Error())
 		return Capabilities{}, err
 	}
 	useSudoWrapper := caps.UID != 0 && caps.Sudo
 	if caps.StageDir == "" {
-		client.Close()
+		closeAll()
 		err := fmt.Errorf("no executable directory found on host (/tmp may be noexec)")
 		m.status(h.ID, "error", err.Error())
 		return caps, err
@@ -335,7 +362,7 @@ func (m *Manager) Start(parent context.Context, h host.Host, intervalSec int) (C
 	if !samplerPresent(client, bin, len(agent.SamplerBinary)) {
 		m.status(h.ID, "uploading", "sampler → "+caps.StageDir)
 		if err := uploadSampler(client, bin); err != nil {
-			client.Close()
+			closeAll()
 			m.status(h.ID, "error", "upload: "+err.Error())
 			return caps, err
 		}
@@ -344,6 +371,7 @@ func (m *Manager) Start(parent context.Context, h host.Host, intervalSec int) (C
 	ctx, cancel := context.WithCancel(parent)
 	s := &session{
 		client:    client,
+		jumps:     jumps,
 		ctx:       ctx,
 		cancel:    cancel,
 		interval:  clampInterval(intervalSec),
@@ -391,14 +419,25 @@ func (m *Manager) SetInterval(hostID string, intervalSec int) error {
 	return nil
 }
 
-// teardown removes a session and closes its client (real disconnect).
+// teardown removes a session and closes its client (real disconnect), including
+// every jump connection the tunnel rides inside — leaking one leaves a session
+// open on a jump server for every connect.
 func (m *Manager) teardown(hostID string, s *session) {
 	m.mu.Lock()
 	if cur, ok := m.sessions[hostID]; ok && cur == s {
 		delete(m.sessions, hostID)
-		s.client.Close()
+		s.closeConns()
 	}
 	m.mu.Unlock()
+}
+
+// closeConns closes the session's client and its upstream jump clients, innermost
+// first.
+func (s *session) closeConns() {
+	s.client.Close()
+	for i := len(s.jumps) - 1; i >= 0; i-- {
+		s.jumps[i].Close()
+	}
 }
 
 // launchStream starts a sampler run under a child context so it can be restarted
@@ -497,7 +536,7 @@ func (m *Manager) Stop(hostID string) {
 			s.nhCancel()
 		}
 		s.cancel()
-		s.client.Close()
+		s.closeConns()
 		m.status(hostID, "stopped", "")
 	}
 }
@@ -1705,6 +1744,14 @@ func (m *Manager) keepAlive(ctx context.Context, hostID string, s *session) {
 			if _, _, err := s.client.SendRequest("keepalive@openssh.com", true, nil); err != nil {
 				return
 			}
+			// The jump hops need this too: an idle-timeout sshd on the jump server
+			// would drop the connection the tunnel is carried inside, killing a
+			// long download even though the inner connection was busy.
+			for _, j := range s.jumps {
+				if _, _, err := j.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+					return
+				}
+			}
 		case <-cw.C:
 			m.watchCaptures(hostID, s)
 		}
@@ -1713,7 +1760,124 @@ func (m *Manager) keepAlive(ctx context.Context, hostID string, s *session) {
 
 // ---- SSH plumbing ----
 
-func dial(h host.Host) (*ssh.Client, error) {
+// HostResolver looks up a registered host by id. The Manager needs it to follow
+// a host's JumpHostID chain without owning the host store.
+type HostResolver func(id string) (host.Host, bool)
+
+// SetHostResolver wires the host store in so tunnelled connections can resolve
+// their jump hosts. Without it a host with a JumpHostID fails to connect rather
+// than silently connecting directly — a direct attempt would either hang or, on a
+// reachable-but-wrong network, land somewhere unintended.
+func (m *Manager) SetHostResolver(f HostResolver) { m.resolveHost = f }
+
+// maxJumpHops caps the length of one tunnel chain. Each hop is a full SSH
+// connection kept open for the life of the session, and a chain this long is far
+// more likely to be a misconfiguration than a real topology.
+const maxJumpHops = 4
+
+// maxJumpPaths caps how many candidate routes are enumerated. With several
+// candidates per hop the combinations multiply, and every failed attempt costs a
+// real dial timeout before the next one is tried.
+const maxJumpPaths = 8
+
+// jumpPaths enumerates the candidate routes to h, best first. Each route starts
+// with a host that is dialled directly and ends with h itself; a host with no jump
+// candidates yields the single direct route.
+//
+// Reachability is not uniform — server_3 may be reachable from server_1 or from
+// server_2 and which one works is not knowable in advance — so this returns
+// alternatives for the dialer to try in order rather than one fixed chain.
+//
+// It is pure (given a resolver) so the cycle, depth and breadth rules can be
+// tested without a network: a circular jump configuration is very easy to create
+// in the UI and would otherwise recurse until it ran out of sockets.
+func jumpPaths(h host.Host, resolve HostResolver) ([][]host.Host, error) {
+	seen := map[string]bool{}
+	if h.ID != "" {
+		seen[h.ID] = true
+	}
+	return jumpPathsFor(h, resolve, seen, 1)
+}
+
+func jumpPathsFor(h host.Host, resolve HostResolver, seen map[string]bool, depth int) ([][]host.Host, error) {
+	cands := h.JumpCandidates()
+	if len(cands) == 0 {
+		return [][]host.Host{{h}}, nil // dialled directly
+	}
+	if resolve == nil {
+		return nil, fmt.Errorf("경유 서버를 조회할 수 없습니다 (호스트 저장소 미연결)")
+	}
+	if depth >= maxJumpHops {
+		return nil, fmt.Errorf("경유 단계가 너무 많습니다 (최대 %d단)", maxJumpHops)
+	}
+
+	var out [][]host.Host
+	var lastErr error
+	for _, id := range cands {
+		if seen[id] {
+			lastErr = fmt.Errorf("경유 서버 설정이 순환합니다 (%s)", h.Name)
+			continue
+		}
+		next, ok := resolve(id)
+		if !ok || next.ID == "" {
+			lastErr = fmt.Errorf("%s 의 경유 서버를 찾을 수 없습니다 (삭제된 호스트일 수 있습니다)", h.Name)
+			continue
+		}
+		// A fresh set per branch: two sibling routes may legitimately reuse a host.
+		sub := map[string]bool{next.ID: true}
+		for k := range seen {
+			sub[k] = true
+		}
+		subPaths, err := jumpPathsFor(next, resolve, sub, depth+1)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		for _, p := range subPaths {
+			out = append(out, append(append([]host.Host{}, p...), h))
+			if len(out) >= maxJumpPaths {
+				return out, nil
+			}
+		}
+	}
+	if len(out) == 0 {
+		if lastErr == nil {
+			lastErr = fmt.Errorf("%s 에 접속할 경유 경로가 없습니다", h.Name)
+		}
+		// Deliberately NOT falling back to a direct dial: this host was marked as
+		// only reachable via a jump, and a direct attempt would either hang or, on a
+		// network where the address happens to resolve, land somewhere unintended.
+		return nil, lastErr
+	}
+	return out, nil
+}
+
+// pathLabel renders the hops of a route (everything before the target) for the
+// status line, e.g. "server_1 → server_2".
+func pathLabel(path []host.Host) string {
+	if len(path) < 2 {
+		return ""
+	}
+	hops := make([]string, 0, len(path)-1)
+	for _, h := range path[:len(path)-1] {
+		n := h.Name
+		if n == "" {
+			n = h.Addr
+		}
+		hops = append(hops, n)
+	}
+	return strings.Join(hops, " → ")
+}
+
+func hostPort(h host.Host) string {
+	port := h.Port
+	if port == 0 {
+		port = 22
+	}
+	return fmt.Sprintf("%s:%d", h.Addr, port)
+}
+
+func clientConfig(h host.Host) (*ssh.ClientConfig, error) {
 	if h.User == "" {
 		return nil, fmt.Errorf("ssh user is required")
 	}
@@ -1735,17 +1899,98 @@ func dial(h host.Host) (*ssh.Client, error) {
 	if len(auths) == 0 {
 		return nil, fmt.Errorf("no password or key provided")
 	}
-	port := h.Port
-	if port == 0 {
-		port = 22
-	}
-	cfg := &ssh.ClientConfig{
+	return &ssh.ClientConfig{
 		User:            h.User,
 		Auth:            auths,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         8 * time.Second,
+	}, nil
+}
+
+func dial(h host.Host) (*ssh.Client, error) {
+	cfg, err := clientConfig(h)
+	if err != nil {
+		return nil, err
 	}
-	return ssh.Dial("tcp", fmt.Sprintf("%s:%d", h.Addr, port), cfg)
+	return ssh.Dial("tcp", hostPort(h), cfg)
+}
+
+// dialThrough connects to the last host in chain, tunnelling through the earlier
+// ones. It returns the final client plus every upstream client, which the caller
+// MUST close when it closes the final one — the tunnel rides inside them, and
+// leaking one leaves an SSH session open on a jump server per connect.
+//
+// This is done natively (a direct-tcpip channel on the jump connection carrying a
+// second SSH handshake) rather than by shelling out to sshpass/ssh -J: no extra
+// binary has to exist on the jump host, and no password ever reaches a command
+// line.
+func dialThrough(chain []host.Host) (*ssh.Client, []*ssh.Client, error) {
+	if len(chain) == 0 {
+		return nil, nil, fmt.Errorf("연결할 호스트가 없습니다")
+	}
+	client, err := dial(chain[0])
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s 연결 실패: %w", chain[0].Name, err)
+	}
+	var ups []*ssh.Client
+	closeUps := func() {
+		client.Close()
+		for _, c := range ups {
+			c.Close()
+		}
+	}
+	for _, next := range chain[1:] {
+		cfg, cerr := clientConfig(next)
+		if cerr != nil {
+			closeUps()
+			return nil, nil, cerr
+		}
+		addr := hostPort(next)
+		// Open the TCP connection to the next hop FROM the current hop.
+		conn, derr := client.Dial("tcp", addr)
+		if derr != nil {
+			closeUps()
+			return nil, nil, fmt.Errorf("%s 경유로 %s 에 접속할 수 없습니다: %w", chain[0].Name, addr, derr)
+		}
+		c, chans, reqs, herr := ssh.NewClientConn(conn, addr, cfg)
+		if herr != nil {
+			conn.Close()
+			closeUps()
+			return nil, nil, fmt.Errorf("%s 인증 실패(경유): %w", next.Name, herr)
+		}
+		ups = append(ups, client)
+		client = ssh.NewClient(c, chans, reqs)
+	}
+	return client, ups, nil
+}
+
+// dialWithFallback tries each candidate route in order and returns the first that
+// connects, along with a label of the hops it went through.
+//
+// Every failure is kept and reported together when they all fail: knowing that
+// server_1 refused the tunnel while server_2 failed authentication is the
+// difference between a firewall problem and a credentials problem, and a single
+// "connection failed" would hide that.
+func dialWithFallback(paths [][]host.Host) (*ssh.Client, []*ssh.Client, string, error) {
+	if len(paths) == 0 {
+		return nil, nil, "", fmt.Errorf("연결할 경로가 없습니다")
+	}
+	var attempts []string
+	for _, p := range paths {
+		client, ups, err := dialThrough(p)
+		if err == nil {
+			return client, ups, pathLabel(p), nil
+		}
+		via := pathLabel(p)
+		if via == "" {
+			via = "직접"
+		}
+		attempts = append(attempts, fmt.Sprintf("%s: %v", via, err))
+	}
+	if len(attempts) == 1 {
+		return nil, nil, "", fmt.Errorf("%s", attempts[0])
+	}
+	return nil, nil, "", fmt.Errorf("모든 경유 경로 실패 — %s", strings.Join(attempts, " / "))
 }
 
 const probeScript = `echo "uid=$(id -u)"; ` +

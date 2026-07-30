@@ -14,6 +14,8 @@ export namespace host {
 	    updatedAt: any;
 	    clusterId?: string;
 	    clusterName?: string;
+	    jumpHostIds?: string[];
+	    jumpHostId?: string;
 	    lizExpDays?: number;
 	    rootExpDays?: number;
 	    // Go type: time
@@ -36,6 +38,8 @@ export namespace host {
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
 	        this.clusterId = source["clusterId"];
 	        this.clusterName = source["clusterName"];
+	        this.jumpHostIds = source["jumpHostIds"];
+	        this.jumpHostId = source["jumpHostId"];
 	        this.lizExpDays = source["lizExpDays"];
 	        this.rootExpDays = source["rootExpDays"];
 	        this.pwCheckedAt = this.convertValues(source["pwCheckedAt"], null);

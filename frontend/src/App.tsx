@@ -1161,6 +1161,7 @@ export default function App() {
       {dialog.open && (
         <ConnectDialog
           initial={dialog.editing}
+          hosts={hosts}
           onSaved={handleSaved}
           onClose={() => setDialog({ open: false })}
         />
@@ -1169,6 +1170,7 @@ export default function App() {
       {(clusterDialogOpen || clusterEdit) && (
         <ClusterDialog
           editing={clusterEdit ?? undefined}
+          hosts={hosts}
           onSaved={handleClusterSaved}
           onClose={() => { setClusterDialogOpen(false); setClusterEdit(null); }}
         />

@@ -95,6 +95,18 @@ func (a *App) startup(ctx context.Context) {
 	a.pcapLocal = pl
 
 	a.mgr = monitor.NewManager(a.onFrame, a.onStatus, a.onNethogs, a.onCapture, a.rpmFS)
+	// Lets the monitor follow a host's JumpHostID chain when the target is only
+	// reachable through another server.
+	a.mgr.SetHostResolver(func(id string) (host.Host, bool) {
+		if a.hosts == nil {
+			return host.Host{}, false
+		}
+		h, ok, err := a.hosts.Get(id)
+		if err != nil {
+			return host.Host{}, false
+		}
+		return h, ok
+	})
 
 	// Auto-updater: default a "dev" version, build from the app-specific config
 	// dir, and sweep any leftover swap files from a previous update.

@@ -1,7 +1,11 @@
-# Shell scripts must keep LF endings on every platform.
+# Scripts that get embedded and shipped to a RHEL host must keep LF endings on
+# every platform.
 #
-# internal/monitor/pcapd.sh is embedded with //go:embed and shipped to a RHEL host
-# as base64; a single CR would break its shebang and every line of it. The launch
-# path normalises endings defensively, but with core.autocrlf=true a Windows clone
-# would still check the file out as CRLF and fail TestPcapdNoCRLF, so pin it here.
+# internal/monitor/pcapd.sh is embedded with //go:embed and shipped as base64; a
+# single CR would break its shebang and every line of it. internal/monitor/
+# logfilter.awk is uploaded and run with `awk -f`, where a CR ends up inside every
+# regex and comparison. Both launch paths normalise endings defensively, but with
+# core.autocrlf=true a Windows clone would still check them out as CRLF and fail
+# their invariant tests, so pin them here.
 *.sh text eol=lf
+*.awk text eol=lf

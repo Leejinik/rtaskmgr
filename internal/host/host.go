@@ -38,6 +38,20 @@ type Host struct {
 	ClusterID   string `json:"clusterId,omitempty"`
 	ClusterName string `json:"clusterName,omitempty"`
 
+	// JumpHostIDs are registered hosts to tunnel through when this one is not
+	// directly reachable — some data centres only expose one or two servers and
+	// everything else has to be reached via them. Empty means connect directly.
+	//
+	// It is a LIST because reachability is not uniform: server_3 may be reachable
+	// from server_1 or from server_2, and which one works is not knowable in
+	// advance. They are tried in order until one connects. A jump host may itself
+	// have candidates, so chains are supported.
+	JumpHostIDs []string `json:"jumpHostIds,omitempty"`
+
+	// JumpHostID is the earlier single-value form, read only so an existing
+	// hosts.json keeps working. Use JumpCandidates().
+	JumpHostID string `json:"jumpHostId,omitempty"`
+
 	// Password-expiry cache for the managed accounts (liz/root), refreshed on
 	// connect so the sidebar/hover can show expiry without a live session.
 	// Values are the expiry day as a Unix day number (days since 1970-01-01):
@@ -52,6 +66,24 @@ func (h Host) port() int {
 		return 22
 	}
 	return h.Port
+}
+
+// JumpCandidates returns the jump hosts to try, in priority order, tolerating the
+// pre-list form still present in an older hosts.json. Empty means connect directly.
+func (h Host) JumpCandidates() []string {
+	if len(h.JumpHostIDs) > 0 {
+		out := make([]string, 0, len(h.JumpHostIDs))
+		for _, id := range h.JumpHostIDs {
+			if id != "" {
+				out = append(out, id)
+			}
+		}
+		return out
+	}
+	if h.JumpHostID != "" {
+		return []string{h.JumpHostID}
+	}
+	return nil
 }
 
 type file struct {
