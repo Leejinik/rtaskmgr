@@ -11,10 +11,11 @@ import {
   PwConfig, RenewPasswords,
   AutoUpdate, ApplyUpdate, GetPendingReleaseNotes, MarkReleaseNotesSeen,
   ShowUpdateModeNoticeOnce,
+  ChooseCaptureSavePath, DownloadCapture, CancelCaptureDownload,
 } from "../wailsjs/go/main/App";
 
 const REFRESH_OPTS = [1, 2, 3, 5, 10, 15, 20, 30, 60];
-import { host, main, updater } from "../wailsjs/go/models";
+import { host, main, monitor, updater } from "../wailsjs/go/models";
 import { Frame, HostStatus, Capabilities, SortKey, SortSpec, MAX_SORT, SysSample } from "./types";
 import ProcTable from "./components/ProcTable";
 import PerformanceView from "./components/PerformanceView";
@@ -27,6 +28,7 @@ import ContextMenu from "./components/ContextMenu";
 import ConfirmDialog from "./components/ConfirmDialog";
 import PlaybackBar from "./components/PlaybackBar";
 import ScheduledModal from "./components/ScheduledModal";
+import PacketCaptureModal from "./components/PacketCaptureModal";
 import PasswordDialog from "./components/PasswordDialog";
 import { fmtUptime, fmtClock } from "./format";
 import { PwInfo, isUrgent, pwTooltip, expLabel } from "./pw";
@@ -109,6 +111,16 @@ export default function App() {
     { active: false, hostId: "", path: "" }
   );
   const [schedOpen, setSchedOpen] = useState(false);
+  // Packet capture. capState is per host so the toolbar and the cluster cards can
+  // show "capturing" without asking the server; it is fed by the "capture" event
+  // the session watcher emits (including a snapshot right after connect, which is
+  // what restores this after an app restart).
+  const [pcapOpen, setPcapOpen] = useState(false);
+  const [capState, setCapState] = useState<Record<string, { running: number; undownloaded: number }>>({});
+  // An in-flight capture download. It lives here rather than in the modal so an
+  // 8GB transfer keeps reporting while the operator closes the dialog and goes
+  // back to monitoring.
+  const [pcapDl, setPcapDl] = useState<{ hostId: string; id: string; copied: number; total: number; pct: number } | null>(null);
   // Managed-account (liz/root) password expiry, keyed by host id. Seeded from the
   // persisted host cache and refreshed live via the "pwstatus" event on connect.
   const [pwStatus, setPwStatus] = useState<Record<string, PwInfo>>({});
@@ -127,6 +139,15 @@ export default function App() {
   // path removed).
   const [manualUpdate, setManualUpdate] = useState<updater.UpdateInfo | null>(null);
   const [releaseNotes, setReleaseNotes] = useState<{ version: string; notes: string } | null>(null);
+
+  // The event listeners are registered once, so they cannot close over `hosts`.
+  // This ref carries the id → display-name map into them.
+  const hostNameRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    const m: Record<string, string> = {};
+    for (const h of hosts) m[h.id] = h.name || h.addr || h.id;
+    hostNameRef.current = m;
+  }, [hosts]);
 
   const toastTimer = useRef<number | null>(null);
   const showToast = (m: string) => {
@@ -250,6 +271,17 @@ export default function App() {
     });
     const offStatus = EventsOn("status", (s: any) => {
       setStatus((prev) => ({ ...prev, [s.hostId]: { state: s.state, detail: s.detail } }));
+      // Drop the capture state on disconnect. Without this the toolbar and the
+      // cluster card would keep showing "capturing" for a host we can no longer
+      // see — the capture may well still be running, but we cannot claim to know.
+      if (s.state === "stopped" || s.state === "error") {
+        setCapState((prev) => {
+          if (!prev[s.hostId]) return prev;
+          const next = { ...prev };
+          delete next[s.hostId];
+          return next;
+        });
+      }
     });
     const offNet = EventsOn("nethogs", (s: any) => {
       setNethogs((prev) => ({
@@ -274,7 +306,35 @@ export default function App() {
       else if (s.active) showToast(`기록 시작 — ${s.path}`);
       else if (s.path) showToast(`기록 종료 — ${s.path}`);
     });
-    return () => { offFrame(); offStatus(); offNet(); offPw(); offRec(); };
+    // Packet-capture transitions. "snapshot" arrives right after connect so the
+    // toolbar recovers a capture that was started before this app was launched;
+    // the rest are real transitions, including the self-stops (deadline, size cap,
+    // low disk) that the operator is not sitting in front of the modal for.
+    const offCap = EventsOn("capture", (s: any) => {
+      if (!s?.hostId) return;
+      setCapState((prev) => ({
+        ...prev,
+        [s.hostId]: { running: s.running ?? 0, undownloaded: s.undownloaded ?? 0 },
+      }));
+      if (s.state === "snapshot" || s.state === "deleted") return;
+      const name = hostNameRef.current[s.hostId] ?? s.hostId;
+      if (s.state === "started") showToast(`${name}: 패킷 캡쳐 시작`);
+      else if (s.state === "stopping") showToast(`${name}: 패킷 캡쳐 중지 중…`);
+      else if (s.state === "failed") showToast(`${name}: 패킷 캡쳐 실행 실패 — ${s.msg || ""}`);
+      else showToast(`${name}: 패킷 캡쳐 종료 — ${s.msg || s.status || ""}`);
+    });
+    const offDl = EventsOn("pcapDl", (s: any) => {
+      if (!s?.hostId) return;
+      if (s.done) {
+        setPcapDl(null);
+        return;
+      }
+      setPcapDl({
+        hostId: s.hostId, id: s.id, copied: s.copied ?? 0,
+        total: s.total ?? 0, pct: s.pct ?? 0,
+      });
+    });
+    return () => { offFrame(); offStatus(); offNet(); offPw(); offRec(); offCap(); offDl(); };
   }, []);
 
   // Raise the expiry alert for the first urgent, not-yet-dismissed host. One at a
@@ -305,16 +365,41 @@ export default function App() {
   }
 
   // ---- Ctrl+S toggles immediate recording for the selected host ----
+  // Ignored while a modal owns the keyboard: Ctrl+S inside the capture or
+  // connection dialog would otherwise pop a native Save As behind it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
+        if (schedOpen || pcapOpen || dialog.open || clusterDialogOpen || !!pwDialog) return;
         void toggleRecord();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
+
+  // ---- capture download (owned here so it outlives the modal) ----
+  async function downloadCapture(hostId: string, cm: monitor.CapMeta) {
+    if (pcapDl) {
+      showToast("이미 다운로드가 진행 중입니다");
+      return;
+    }
+    const live = cm.status === "running" || cm.status === "stopping";
+    try {
+      // The Save As dialog is a separate call: bundled with the transfer, the UI
+      // would sit at "0%" for as long as the operator takes to pick a folder.
+      const path = await ChooseCaptureSavePath(hostId, cm.id, cm.iface || "any", live);
+      if (!path) return;
+      setPcapDl({ hostId, id: cm.id, copied: 0, total: cm.sizeBytes, pct: 0 });
+      await DownloadCapture(hostId, cm.id, path);
+      showToast(`패킷 캡쳐 저장 완료 — ${basename(path)}`);
+    } catch (e: any) {
+      showToast(`다운로드 실패: ${typeof e === "string" ? e : e?.message ?? e}`);
+    } finally {
+      setPcapDl(null);
+    }
+  }
 
   async function toggleRecord() {
     try {
@@ -866,6 +951,9 @@ export default function App() {
           onDisconnectAll={() => disconnectCluster(overviewCluster.hosts.map((h) => h.id))}
           onChangeInterval={changeInterval}
           onProcMenu={(hostId, pid, name, service, x, y) => setProcCtx({ x, y, pid, name, hostId, service })}
+          capturing={Object.fromEntries(
+            Object.entries(capState).map(([id, s]) => [id, (s?.running ?? 0) > 0])
+          )}
         />
       ) : (
       <main className="main">
@@ -976,6 +1064,27 @@ export default function App() {
                   ⏱ 예약 기록…
                 </button>
               )}
+              {connected && (() => {
+                // No disabled state here: whether this host can capture is decided
+                // inside the modal (tcpdump/sudo/storage), the way the scheduled
+                // recording modal already does its own pre-flight.
+                const cs = capState[selected.id];
+                const capturing = (cs?.running ?? 0) > 0;
+                const pending = cs?.undownloaded ?? 0;
+                return (
+                  <button
+                    className={"toolbtn" + (capturing ? " danger pulse" : "")}
+                    onClick={() => setPcapOpen(true)}
+                    title="특정 포트의 패킷을 서버에서 캡쳐합니다 (앱을 닫아도 계속, 시간·용량·디스크 3중 자동중지)"
+                  >
+                    {capturing
+                      ? "● 패킷 캡쳐 중…"
+                      : pending > 0
+                      ? `📡 패킷 캡쳐 (${pending})`
+                      : "📡 패킷 캡쳐…"}
+                  </button>
+                );
+              })()}
             </>
           ) : (
             <span className="main-title sub">호스트를 선택하세요</span>
@@ -1028,6 +1137,18 @@ export default function App() {
             </span>
           )}
           <span style={{ flex: 1 }} />
+          {/* Download progress lives here, not in the modal: the operator must be
+              able to close the dialog and keep monitoring while GBs move. */}
+          {pcapDl && (
+            <span className="pcap-dl">
+              📡 캡쳐 다운로드 {Math.round(pcapDl.pct)}%
+              {pcapDl.total > 0 && ` (${(pcapDl.copied / 1048576).toFixed(0)} / ${(pcapDl.total / 1048576).toFixed(0)} MB)`}
+              <button className="toolbtn" style={{ marginLeft: 8, padding: "1px 6px", fontSize: 11 }}
+                onClick={() => CancelCaptureDownload(pcapDl.hostId, pcapDl.id)}>
+                취소
+              </button>
+            </span>
+          )}
           {recording.active ? (
             <span className="rec">● 실시간 기록 중 — {basename(recording.path)}</span>
           ) : (
@@ -1111,6 +1232,19 @@ export default function App() {
               setPlayback({ meta, hostId: hid, count: hostFrameCount(meta, hid), index: 0, frame: null, playing: false });
             }
           }}
+        />
+      )}
+
+      {pcapOpen && selected && (
+        <PacketCaptureModal
+          hostId={selected.id}
+          hostName={selected.name}
+          frame={frames[selected.id] ?? null}
+          connected={connected}
+          dl={pcapDl}
+          onDownload={(cm) => void downloadCapture(selected.id, cm)}
+          onClose={() => setPcapOpen(false)}
+          onToast={showToast}
         />
       )}
 

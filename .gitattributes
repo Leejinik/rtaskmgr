@@ -1,0 +1,7 @@
+# Shell scripts must keep LF endings on every platform.
+#
+# internal/monitor/pcapd.sh is embedded with //go:embed and shipped to a RHEL host
+# as base64; a single CR would break its shebang and every line of it. The launch
+# path normalises endings defensively, but with core.autocrlf=true a Windows clone
+# would still check the file out as CRLF and fail TestPcapdNoCRLF, so pin it here.
+*.sh text eol=lf

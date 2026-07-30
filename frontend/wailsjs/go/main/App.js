@@ -10,6 +10,18 @@ export function AutoUpdate() {
   return window['go']['main']['App']['AutoUpdate']();
 }
 
+export function CancelCaptureDownload(arg1, arg2) {
+  return window['go']['main']['App']['CancelCaptureDownload'](arg1, arg2);
+}
+
+export function CaptureEnv(arg1) {
+  return window['go']['main']['App']['CaptureEnv'](arg1);
+}
+
+export function CaptureSHA256(arg1, arg2) {
+  return window['go']['main']['App']['CaptureSHA256'](arg1, arg2);
+}
+
 export function ChangePasswords(arg1, arg2) {
   return window['go']['main']['App']['ChangePasswords'](arg1, arg2);
 }
@@ -18,12 +30,20 @@ export function CheckForUpdate() {
   return window['go']['main']['App']['CheckForUpdate']();
 }
 
+export function ChooseCaptureSavePath(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ChooseCaptureSavePath'](arg1, arg2, arg3, arg4);
+}
+
 export function Connect(arg1, arg2) {
   return window['go']['main']['App']['Connect'](arg1, arg2);
 }
 
 export function ConnectMany(arg1, arg2) {
   return window['go']['main']['App']['ConnectMany'](arg1, arg2);
+}
+
+export function DeleteCapture(arg1, arg2) {
+  return window['go']['main']['App']['DeleteCapture'](arg1, arg2);
 }
 
 export function DeleteHost(arg1) {
@@ -42,6 +62,10 @@ export function DisconnectMany(arg1) {
   return window['go']['main']['App']['DisconnectMany'](arg1);
 }
 
+export function DownloadCapture(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DownloadCapture'](arg1, arg2, arg3);
+}
+
 export function DownloadScheduledAndPlay(arg1, arg2) {
   return window['go']['main']['App']['DownloadScheduledAndPlay'](arg1, arg2);
 }
@@ -56,6 +80,10 @@ export function DownloadScheduledSlicesAndPlay(arg1, arg2, arg3, arg4, arg5) {
 
 export function EstimateScheduled(arg1) {
   return window['go']['main']['App']['EstimateScheduled'](arg1);
+}
+
+export function ForgetCapture(arg1, arg2) {
+  return window['go']['main']['App']['ForgetCapture'](arg1, arg2);
 }
 
 export function GetCurrentVersion() {
@@ -74,12 +102,24 @@ export function KillProcess(arg1, arg2, arg3) {
   return window['go']['main']['App']['KillProcess'](arg1, arg2, arg3);
 }
 
+export function ListCaptures(arg1) {
+  return window['go']['main']['App']['ListCaptures'](arg1);
+}
+
 export function ListHosts() {
   return window['go']['main']['App']['ListHosts']();
 }
 
 export function ListScheduled(arg1) {
   return window['go']['main']['App']['ListScheduled'](arg1);
+}
+
+export function LocalCapturePath(arg1, arg2) {
+  return window['go']['main']['App']['LocalCapturePath'](arg1, arg2);
+}
+
+export function LocalOperator() {
+  return window['go']['main']['App']['LocalOperator']();
 }
 
 export function LogFrameAt(arg1, arg2) {
@@ -108,6 +148,14 @@ export function NethogsInstall(arg1) {
 
 export function NethogsRollback(arg1) {
   return window['go']['main']['App']['NethogsRollback'](arg1);
+}
+
+export function OpenCaptureFolder(arg1, arg2) {
+  return window['go']['main']['App']['OpenCaptureFolder'](arg1, arg2);
+}
+
+export function OpenInWireshark(arg1, arg2) {
+  return window['go']['main']['App']['OpenInWireshark'](arg1, arg2);
 }
 
 export function OpenLogDialog() {
@@ -162,12 +210,24 @@ export function ShowUpdateModeNoticeOnce() {
   return window['go']['main']['App']['ShowUpdateModeNoticeOnce']();
 }
 
+export function StartCapture(arg1, arg2) {
+  return window['go']['main']['App']['StartCapture'](arg1, arg2);
+}
+
 export function StartRecording(arg1) {
   return window['go']['main']['App']['StartRecording'](arg1);
 }
 
 export function StartScheduled(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['StartScheduled'](arg1, arg2, arg3, arg4);
+}
+
+export function StopCapture(arg1, arg2) {
+  return window['go']['main']['App']['StopCapture'](arg1, arg2);
+}
+
+export function StopCaptureForce(arg1, arg2) {
+  return window['go']['main']['App']['StopCaptureForce'](arg1, arg2);
 }
 
 export function StopRecording() {

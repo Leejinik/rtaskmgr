@@ -21,6 +21,10 @@ interface Props {
   onChangeInterval: (sec: number) => void;
   // Right-click a process row -> open the terminate menu, pinned to this host.
   onProcMenu?: (hostId: string, pid: number, name: string, service: string, x: number, y: number) => void;
+  // Which hosts have a packet capture running. Only a badge is shown here: there
+  // is no "selected host" on the overview, and the interface, ports and storage
+  // partition differ per host, so a bulk capture action would not be meaningful.
+  capturing?: Record<string, boolean>;
 }
 
 const fmtGB = (kib: number) => `${(kib / 1024 / 1024).toFixed(1)} GB`;
@@ -50,7 +54,7 @@ function Gauge({ value, label }: { value: number; label: string }) {
 }
 
 function ServerCard({
-  h, frame, st, hist, onOpen, onConnect,
+  h, frame, st, hist, onOpen, onConnect, capturing,
 }: {
   h: host.Host;
   frame?: Frame;
@@ -58,6 +62,7 @@ function ServerCard({
   hist: SysSample[];
   onOpen: () => void;
   onConnect: () => void;
+  capturing?: boolean;
 }) {
   const connected = st?.state === "streaming" && !!frame;
   const cpuVals = hist.map((s) => s.cpu);
@@ -69,6 +74,9 @@ function ServerCard({
       <div className="sc-head">
         <span className={`dot ${st?.state ?? ""}`} />
         <span className="sc-name">{h.name}</span>
+        {capturing && (
+          <span className="pcap-badge pcap-bad" title="이 서버에서 패킷 캡쳐가 실행 중입니다">📡</span>
+        )}
         <span className="sc-addr">{h.user}@{h.addr}</span>
       </div>
 
@@ -275,6 +283,7 @@ const PER_PAGE_OPTS: (number | "all")[] = [1, 2, 3, 4, 5, "all"];
 export default function ClusterOverview({
   clusterName, hosts, frames, status, sysHist, refreshSec,
   onOpenHost, onConnectOne, onConnectAll, onDisconnectAll, onChangeInterval, onProcMenu,
+  capturing,
 }: Props) {
   const connectedCount = hosts.filter((h) => status[h.id]?.state === "streaming").length;
   const [mode, setMode] = useState<"summary" | "proc">("summary");
@@ -427,6 +436,7 @@ export default function ClusterOverview({
               hist={sysHist[h.id] ?? []}
               onOpen={() => onOpenHost(h.id)}
               onConnect={() => onConnectOne(h.id)}
+              capturing={!!capturing?.[h.id]}
             />
           ))}
         </div>

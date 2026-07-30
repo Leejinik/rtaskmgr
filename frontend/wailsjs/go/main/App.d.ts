@@ -11,13 +11,23 @@ export function ApplyUpdate(arg1:updater.UpdateInfo):Promise<void>;
 
 export function AutoUpdate():Promise<updater.AutoUpdateResult>;
 
+export function CancelCaptureDownload(arg1:string,arg2:string):Promise<void>;
+
+export function CaptureEnv(arg1:string):Promise<monitor.CapEnv>;
+
+export function CaptureSHA256(arg1:string,arg2:string):Promise<string>;
+
 export function ChangePasswords(arg1:string,arg2:string):Promise<void>;
 
 export function CheckForUpdate():Promise<updater.UpdateInfo>;
 
+export function ChooseCaptureSavePath(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<string>;
+
 export function Connect(arg1:string,arg2:number):Promise<monitor.Capabilities>;
 
 export function ConnectMany(arg1:Array<string>,arg2:number):Promise<Array<main.ClusterConnectResult>>;
+
+export function DeleteCapture(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteHost(arg1:string):Promise<void>;
 
@@ -27,6 +37,8 @@ export function Disconnect(arg1:string):Promise<void>;
 
 export function DisconnectMany(arg1:Array<string>):Promise<void>;
 
+export function DownloadCapture(arg1:string,arg2:string,arg3:string):Promise<string>;
+
 export function DownloadScheduledAndPlay(arg1:string,arg2:string):Promise<main.LogMeta>;
 
 export function DownloadScheduledDayAndPlay(arg1:string,arg2:string,arg3:number,arg4:number,arg5:number):Promise<main.LogMeta>;
@@ -34,6 +46,8 @@ export function DownloadScheduledDayAndPlay(arg1:string,arg2:string,arg3:number,
 export function DownloadScheduledSlicesAndPlay(arg1:string,arg2:string,arg3:number,arg4:number,arg5:number):Promise<main.LogMeta>;
 
 export function EstimateScheduled(arg1:string):Promise<monitor.RecEstimate>;
+
+export function ForgetCapture(arg1:string,arg2:string):Promise<void>;
 
 export function GetCurrentVersion():Promise<string>;
 
@@ -43,9 +57,15 @@ export function IsRecording():Promise<boolean>;
 
 export function KillProcess(arg1:string,arg2:number,arg3:boolean):Promise<void>;
 
+export function ListCaptures(arg1:string):Promise<Array<monitor.CapMeta>>;
+
 export function ListHosts():Promise<Array<host.Host>>;
 
 export function ListScheduled(arg1:string):Promise<Array<monitor.RecMeta>>;
+
+export function LocalCapturePath(arg1:string,arg2:string):Promise<string>;
+
+export function LocalOperator():Promise<string>;
 
 export function LogFrameAt(arg1:string,arg2:number):Promise<monitor.Frame>;
 
@@ -60,6 +80,10 @@ export function MarkReleaseNotesSeen():Promise<void>;
 export function NethogsInstall(arg1:string):Promise<void>;
 
 export function NethogsRollback(arg1:string):Promise<void>;
+
+export function OpenCaptureFolder(arg1:string,arg2:string):Promise<void>;
+
+export function OpenInWireshark(arg1:string,arg2:string):Promise<void>;
 
 export function OpenLogDialog():Promise<main.LogMeta>;
 
@@ -87,9 +111,15 @@ export function SetPwConfig(arg1:pwledger.Config):Promise<void>;
 
 export function ShowUpdateModeNoticeOnce():Promise<void>;
 
+export function StartCapture(arg1:string,arg2:monitor.CapRequest):Promise<monitor.CapMeta>;
+
 export function StartRecording(arg1:string):Promise<string>;
 
 export function StartScheduled(arg1:string,arg2:number,arg3:number,arg4:string):Promise<monitor.RecMeta>;
+
+export function StopCapture(arg1:string,arg2:string):Promise<monitor.CapMeta>;
+
+export function StopCaptureForce(arg1:string,arg2:string):Promise<monitor.CapMeta>;
 
 export function StopRecording():Promise<string>;
 

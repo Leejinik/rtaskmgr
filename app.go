@@ -18,6 +18,7 @@ import (
 	"rtaskmgr/internal/monitor"
 	"rtaskmgr/internal/pwledger"
 	"rtaskmgr/internal/record"
+	"rtaskmgr/internal/store"
 	"rtaskmgr/internal/updater"
 )
 
@@ -28,6 +29,11 @@ type App struct {
 	rec   *record.Recorder
 	led   *pwledger.Store
 	rpmFS fs.FS
+
+	// pcapLocal remembers where downloaded captures landed on this PC; capDL
+	// tracks in-flight transfers so they can be cancelled.
+	pcapLocal *store.PcapLocal
+	capDL     capDownloads
 
 	// version is set from main() after NewApp(); the updater is built in
 	// startup() once the config dir is known. Empty version → "dev" → updater off.
@@ -82,7 +88,13 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.led = led
 
-	a.mgr = monitor.NewManager(a.onFrame, a.onStatus, a.onNethogs, a.rpmFS)
+	pl, err := store.NewPcapLocal()
+	if err != nil {
+		fmt.Println("pcap ledger init failed:", err)
+	}
+	a.pcapLocal = pl
+
+	a.mgr = monitor.NewManager(a.onFrame, a.onStatus, a.onNethogs, a.onCapture, a.rpmFS)
 
 	// Auto-updater: default a "dev" version, build from the app-specific config
 	// dir, and sweep any leftover swap files from a previous update.
@@ -856,15 +868,17 @@ func (a *App) ShowUpdateModeNoticeOnce() {
 
 // beforeClose finalizes any active immediate recording (the file the user chose
 // is already real, so just close it cleanly) and tears down sessions. Scheduled
-// server-side recordings intentionally keep running on the host. Returns false
-// to allow the window to close.
+// server-side recordings AND packet captures intentionally keep running on the
+// host — only our own in-flight downloads are cancelled. Returns false to allow
+// the window to close.
 //
 // Note: immediate recording is client-side; closing the app stops it. Scheduled
-// recordings survive on the server until their deadline.
+// recordings and captures survive on the server until their deadline.
 func (a *App) beforeClose(ctx context.Context) bool {
 	if a.rec != nil && a.rec.IsRecording() {
 		a.rec.StopFile()
 	}
+	a.capDL.cancelAll()
 	a.mgr.StopAll()
 	return false
 }

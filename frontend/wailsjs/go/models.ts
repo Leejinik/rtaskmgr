@@ -157,6 +157,226 @@ export namespace main {
 
 export namespace monitor {
 	
+	export class RecTarget {
+	    path: string;
+	    mount: string;
+	    totalBytes: number;
+	    freeBytes: number;
+	    writable: boolean;
+	    needsSudo: boolean;
+	    fsType: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RecTarget(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.mount = source["mount"];
+	        this.totalBytes = source["totalBytes"];
+	        this.freeBytes = source["freeBytes"];
+	        this.writable = source["writable"];
+	        this.needsSudo = source["needsSudo"];
+	        this.fsType = source["fsType"];
+	    }
+	}
+	export class NIC {
+	    name: string;
+	    state: string;
+	    mac: string;
+	    ipv4: string;
+	    speedMb: number;
+	    mtu: number;
+	    up: boolean;
+	    virtual: boolean;
+	    loopback: boolean;
+	    master: string;
+	    isMaster: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new NIC(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.state = source["state"];
+	        this.mac = source["mac"];
+	        this.ipv4 = source["ipv4"];
+	        this.speedMb = source["speedMb"];
+	        this.mtu = source["mtu"];
+	        this.up = source["up"];
+	        this.virtual = source["virtual"];
+	        this.loopback = source["loopback"];
+	        this.master = source["master"];
+	        this.isMaster = source["isMaster"];
+	    }
+	}
+	export class CapEnv {
+	    elevated: boolean;
+	    tcpdump: boolean;
+	    tcpdumpPath: string;
+	    version: string;
+	    nics: NIC[];
+	    targets: RecTarget[];
+	    maxSec: number;
+	    maxMB: number;
+	    maxPackets: number;
+	    existingCount: number;
+	    existingBytes: number;
+	    running: number;
+	    owner: string;
+	    ownerUid: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CapEnv(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.elevated = source["elevated"];
+	        this.tcpdump = source["tcpdump"];
+	        this.tcpdumpPath = source["tcpdumpPath"];
+	        this.version = source["version"];
+	        this.nics = this.convertValues(source["nics"], NIC);
+	        this.targets = this.convertValues(source["targets"], RecTarget);
+	        this.maxSec = source["maxSec"];
+	        this.maxMB = source["maxMB"];
+	        this.maxPackets = source["maxPackets"];
+	        this.existingCount = source["existingCount"];
+	        this.existingBytes = source["existingBytes"];
+	        this.running = source["running"];
+	        this.owner = source["owner"];
+	        this.ownerUid = source["ownerUid"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class CapMeta {
+	    id: string;
+	    hostId: string;
+	    hostName: string;
+	    file: string;
+	    iface: string;
+	    filter: string;
+	    portSpec: string;
+	    portsRaw: string;
+	    hostSpec: string;
+	    hostsRaw: string;
+	    snapLen: number;
+	    maxSec: number;
+	    minFreeMB: number;
+	    maxPackets: number;
+	    maxBytes: number;
+	    promisc: boolean;
+	    startT: number;
+	    plannedEndT: number;
+	    owner: string;
+	    ownerUid: number;
+	    startedBy: string;
+	    status: string;
+	    doneReason: string;
+	    err: string;
+	    linkType: string;
+	    sizeBytes: number;
+	    lastT: number;
+	    uncertain: boolean;
+	    captured: number;
+	    received: number;
+	    droppedKern: number;
+	    droppedIf: number;
+	    localPath: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CapMeta(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.hostId = source["hostId"];
+	        this.hostName = source["hostName"];
+	        this.file = source["file"];
+	        this.iface = source["iface"];
+	        this.filter = source["filter"];
+	        this.portSpec = source["portSpec"];
+	        this.portsRaw = source["portsRaw"];
+	        this.hostSpec = source["hostSpec"];
+	        this.hostsRaw = source["hostsRaw"];
+	        this.snapLen = source["snapLen"];
+	        this.maxSec = source["maxSec"];
+	        this.minFreeMB = source["minFreeMB"];
+	        this.maxPackets = source["maxPackets"];
+	        this.maxBytes = source["maxBytes"];
+	        this.promisc = source["promisc"];
+	        this.startT = source["startT"];
+	        this.plannedEndT = source["plannedEndT"];
+	        this.owner = source["owner"];
+	        this.ownerUid = source["ownerUid"];
+	        this.startedBy = source["startedBy"];
+	        this.status = source["status"];
+	        this.doneReason = source["doneReason"];
+	        this.err = source["err"];
+	        this.linkType = source["linkType"];
+	        this.sizeBytes = source["sizeBytes"];
+	        this.lastT = source["lastT"];
+	        this.uncertain = source["uncertain"];
+	        this.captured = source["captured"];
+	        this.received = source["received"];
+	        this.droppedKern = source["droppedKern"];
+	        this.droppedIf = source["droppedIf"];
+	        this.localPath = source["localPath"];
+	    }
+	}
+	export class CapRequest {
+	    iface: string;
+	    portSpec: string;
+	    hostSpec: string;
+	    targetDir: string;
+	    maxSec: number;
+	    maxMB: number;
+	    minFreeMB: number;
+	    maxPackets: number;
+	    snapLen: number;
+	    promisc: boolean;
+	    noFilter: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CapRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.iface = source["iface"];
+	        this.portSpec = source["portSpec"];
+	        this.hostSpec = source["hostSpec"];
+	        this.targetDir = source["targetDir"];
+	        this.maxSec = source["maxSec"];
+	        this.maxMB = source["maxMB"];
+	        this.minFreeMB = source["minFreeMB"];
+	        this.maxPackets = source["maxPackets"];
+	        this.snapLen = source["snapLen"];
+	        this.promisc = source["promisc"];
+	        this.noFilter = source["noFilter"];
+	    }
+	}
 	export class Capabilities {
 	    uid: number;
 	    os: string;
@@ -327,6 +547,7 @@ export namespace monitor {
 	}
 	
 	
+	
 	export class PwStatus {
 	    hasLiz: boolean;
 	    hasRoot: boolean;
@@ -345,28 +566,6 @@ export namespace monitor {
 	        this.lizExpDays = source["lizExpDays"];
 	        this.rootExpDays = source["rootExpDays"];
 	        this.todayDays = source["todayDays"];
-	    }
-	}
-	export class RecTarget {
-	    path: string;
-	    mount: string;
-	    totalBytes: number;
-	    freeBytes: number;
-	    writable: boolean;
-	    needsSudo: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new RecTarget(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.path = source["path"];
-	        this.mount = source["mount"];
-	        this.totalBytes = source["totalBytes"];
-	        this.freeBytes = source["freeBytes"];
-	        this.writable = source["writable"];
-	        this.needsSudo = source["needsSudo"];
 	    }
 	}
 	export class RecEstimate {

@@ -212,6 +212,15 @@ body,
   gap: 10px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
+  /* The bar now holds a dozen controls and `body` has overflow:hidden, so
+     without wrapping (and without stopping the buttons from being squeezed) the
+     last ones would be pushed outside the viewport in a narrow window with
+     neither a line break nor a scrollbar to reach them. */
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+.main-topbar .toolbtn {
+  flex-shrink: 0;
 }
 .main-title {
   font-weight: 600;
@@ -310,6 +319,45 @@ body,
 }
 .toolbtn.primary:hover {
   background: #1177bb;
+}
+/* A toolbar button for a live/destructive action. This class was already in use
+   by "■ 기록 중지" but had never been defined, so the most consequential button
+   in the bar rendered exactly like the neutral ones. The colours are rgba
+   literals because --bad is a hex value and cannot be alpha-composited. */
+.toolbtn.danger {
+  background: rgba(255, 107, 107, 0.16);
+  border-color: rgba(255, 107, 107, 0.55);
+  color: #ff8f8f;
+}
+.toolbtn.danger:hover {
+  background: rgba(255, 107, 107, 0.26);
+  color: #ffb3b3;
+}
+.toolbtn.danger.pulse {
+  animation: rtm-pulse 1.8s ease-in-out infinite;
+}
+:root.light .toolbtn.danger {
+  background: rgba(196, 43, 28, 0.1);
+  border-color: rgba(196, 43, 28, 0.45);
+  color: #c42b1c;
+}
+:root.light .toolbtn.danger:hover {
+  background: rgba(196, 43, 28, 0.18);
+  color: #8f1f14;
+}
+@keyframes rtm-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 107, 107, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.18);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .toolbtn.danger.pulse {
+    animation: none;
+  }
 }
 
 /* ---- host tabs ---- */
@@ -483,6 +531,11 @@ table.proc tbody tr.sel td {
   justify-content: center;
   z-index: 50;
 }
+/* A confirmation opened on top of a modal must not dim the screen twice: two
+   0.55 scrims multiply to near-black and the modal underneath disappears. */
+.scrim + .scrim {
+  background: rgba(0, 0, 0, 0.3);
+}
 .modal {
   background: var(--bg-panel);
   border: 1px solid var(--border);
@@ -542,6 +595,88 @@ table.proc tbody tr.sel td {
   margin-top: 10px;
   font-size: 12px;
   min-height: 14px;
+}
+
+/* ---- packet capture ---- */
+.pcap-box {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.pcap-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+/* body sets user-select:none, so anything meant to be copied out (a filter
+   expression, a path) has to opt back in. */
+.pcap-mono {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  user-select: text;
+}
+/* Fixed height so swapping the BPF preview for an inline error while typing does
+   not make the rest of the form jump. */
+.pcap-preview {
+  min-height: 34px;
+  font-size: 12px;
+  padding: 6px 0 0;
+  line-height: 1.5;
+}
+.pcap-dim { color: var(--text-mute); }
+.pcap-warn { color: var(--warn); }
+.pcap-bad { color: var(--bad); }
+.pcap-good { color: var(--good); }
+.pcap-nics {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 190px;
+  overflow-y: auto;
+}
+.pcap-nic {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.pcap-nic:hover { background: var(--bg-row-hover); }
+.pcap-nic.sel { background: var(--bg-row-hover); }
+.pcap-nic.down { opacity: 0.6; }
+.pcap-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+.pcap-bar {
+  height: 5px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+.pcap-bar > div {
+  height: 100%;
+  background: var(--good);
+  transition: width 0.2s;
+}
+.pcap-reason {
+  white-space: normal;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.pcap-dl {
+  color: var(--accent, #4aa3ff);
+  font-weight: 600;
 }
 
 /* ---- password manager ---- */

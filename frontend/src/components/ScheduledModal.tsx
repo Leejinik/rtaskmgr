@@ -5,6 +5,7 @@ import {
   PrepareScheduledSlices, DownloadScheduledSlicesAndPlay, EstimateScheduled,
 } from "../../wailsjs/go/main/App";
 import { EventsOn } from "../../wailsjs/runtime";
+import TargetPicker, { defaultTarget, targetUsable } from "./TargetPicker";
 
 interface Props {
   hostId: string;
@@ -115,8 +116,7 @@ export default function ScheduledModal({ hostId, hostName, onClose, onPlay }: Pr
     try {
       const e = await EstimateScheduled(hostId);
       setEst(e);
-      const ts = e.targets ?? [];
-      const def = ts.find((t) => t.writable) ?? ts.find((t) => t.needsSudo) ?? ts[0];
+      const def = defaultTarget(e.targets ?? [], "rec");
       setTarget(def ? def.path : "");
     } catch (e: any) {
       setErr(String(e));
@@ -131,7 +131,7 @@ export default function ScheduledModal({ hostId, hostName, onClose, onPlay }: Pr
   const overCap = durationSec > MAX_DAYS * 86400;
 
   const sel = est?.targets?.find((t) => t.path === target);
-  const usable = (t: monitor.RecTarget) => t.writable || t.needsSudo;
+  const usable = targetUsable;
   // Per-frame gzip size measured by the 1s probe; scale by the chosen recording
   // interval (fewer frames/day = proportionally less disk).
   const perFrame = est && est.frames > 0 ? est.probeBytes / est.frames : 0;
@@ -273,45 +273,12 @@ export default function ScheduledModal({ hostId, hostName, onClose, onPlay }: Pr
                 </span>
               </div>
 
-              {(est.targets ?? []).length === 0 ? (
-                <div style={{ color: "var(--bad)", fontSize: 12 }}>
-                  기록 가능한 파티션을 찾지 못했습니다.
-                </div>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  {est.targets.map((t) => {
-                    const ok = usable(t);
-                    return (
-                      <label key={t.path}
-                        style={{
-                          display: "flex", alignItems: "center", gap: 8, fontSize: 12,
-                          padding: "4px 6px", borderRadius: 4,
-                          opacity: ok ? 1 : 0.5, cursor: ok ? "pointer" : "not-allowed",
-                          background: target === t.path ? "var(--row-sel, rgba(255,255,255,0.06))" : "transparent",
-                        }}>
-                        <input type="radio" name="rectarget" disabled={!ok}
-                          checked={target === t.path}
-                          onChange={() => setTarget(t.path)} />
-                        <span style={{ fontFamily: "monospace", minWidth: 150 }}>{t.path}</span>
-                        <span style={{ color: "var(--text-mute)" }}>({t.mount})</span>
-                        <span style={{ marginLeft: "auto" }}>
-                          여유 <b style={{ color: "var(--good)" }}>{fmtSize(t.freeBytes)}</b>
-                          {" / "}{fmtSize(t.totalBytes)}
-                        </span>
-                        <span style={{
-                          fontSize: 11, padding: "1px 6px", borderRadius: 3,
-                          background: t.writable ? "var(--good-bg, rgba(80,200,120,0.18))"
-                            : t.needsSudo ? "var(--warn-bg, rgba(220,180,80,0.18))"
-                            : "var(--bad-bg, rgba(220,90,90,0.18))",
-                          color: t.writable ? "var(--good)" : t.needsSudo ? "var(--warn, #d8b450)" : "var(--bad)",
-                        }}>
-                          {t.writable ? "쓰기가능" : t.needsSudo ? "sudo로 생성" : "권한 없음"}
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
+              <TargetPicker
+                targets={est.targets ?? []}
+                value={target}
+                onChange={setTarget}
+                mode="rec"
+              />
 
               {sel && durationSec > 0 && (
                 <div style={{ fontSize: 12, marginTop: 8, color: wouldFill ? "var(--bad)" : "var(--text-dim)" }}>

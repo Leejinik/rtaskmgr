@@ -22,6 +22,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -71,6 +72,11 @@ type RecTarget struct {
 	FreeBytes  int64  `json:"freeBytes"`  // available space
 	Writable   bool   `json:"writable"`   // login user can write Path directly
 	NeedsSudo  bool   `json:"needsSudo"`  // not writable, but sudo can create a user-owned subdir
+	// FSType is the filesystem type from `stat -f -c %T`. Packet capture refuses
+	// tmpfs/ramfs targets: the sampler writes KB/s so RAM was harmless, but
+	// tcpdump writes at line rate and would burn the host's memory until the OOM
+	// killer picks something — likely the production process being diagnosed.
+	FSType string `json:"fsType"`
 }
 
 // RecEstimate is the pre-flight panel for scheduled recording: where it can be
@@ -188,8 +194,14 @@ type session struct {
 	useSudo      bool               // wrap remote commands in sudo
 	elevated     bool               // root or working sudo (required for nethogs/dnf)
 	password     string
-	user         string             // login user (for sudo chown of recording dirs)
+	user         string // login user (for sudo chown of recording dirs)
+	uid          int    // login uid from the probe (numeric owner for capture files)
 	rhelMajor    string
+
+	capMu     sync.Mutex
+	capSnap   map[string]capLite // last capture snapshot seen by the session watcher
+	capSeeded bool
+	capTick   int // watcher ticks, used to back off when the host has no captures
 
 	netMu           sync.Mutex
 	net             map[int]int64 // pid -> bytes/s (sent+recv); valid while nhActive
@@ -244,15 +256,17 @@ type Manager struct {
 	onFrame   FrameFunc
 	onStatus  StatusFunc
 	onNethogs NethogsFunc
+	onCapture CaptureFunc
 	rpmFS     fs.FS // embedded offline RPM bundle (rpms/rhel8, rpms/rhel9)
 }
 
-func NewManager(onFrame FrameFunc, onStatus StatusFunc, onNethogs NethogsFunc, rpmFS fs.FS) *Manager {
+func NewManager(onFrame FrameFunc, onStatus StatusFunc, onNethogs NethogsFunc, onCapture CaptureFunc, rpmFS fs.FS) *Manager {
 	return &Manager{
 		sessions:  map[string]*session{},
 		onFrame:   onFrame,
 		onStatus:  onStatus,
 		onNethogs: onNethogs,
+		onCapture: onCapture,
 		rpmFS:     rpmFS,
 	}
 }
@@ -339,6 +353,7 @@ func (m *Manager) Start(parent context.Context, h host.Host, intervalSec int) (C
 		elevated:  caps.Sudo,
 		password:  h.Password,
 		user:      h.User,
+		uid:       caps.UID,
 		rhelMajor: caps.RHELMajor,
 	}
 	m.mu.Lock()
@@ -348,8 +363,12 @@ func (m *Manager) Start(parent context.Context, h host.Host, intervalSec int) (C
 	// App-level SSH keepalive: a scheduled-recording download can run a multi-
 	// minute host-side zcat with no bytes flowing back over the channel (base64
 	// only emits at the end). Without this, an idle-timeout sshd drops the
-	// connection mid-download; it also lets us notice a dead peer promptly.
-	go keepAlive(ctx, client)
+	// connection mid-download; it also lets us notice a dead peer promptly. The
+	// same goroutine carries the packet-capture watcher tick.
+	go m.keepAlive(ctx, h.ID, s)
+	// Seed the capture state immediately so a reconnect or app restart restores
+	// the toolbar without waiting for the first watcher tick.
+	go m.watchCaptures(h.ID, s)
 
 	m.launchStream(h.ID, s)
 	m.status(h.ID, "streaming", "")
@@ -869,15 +888,32 @@ func recBasesSh(s *session) string {
 	return stage + ` "$HOME" /data /home`
 }
 
-// resolveRecFile locates a recording's on-host gz path across the candidate
-// bases (recordings may live on different partitions now). id is app-generated
-// (rec-<millis>), so it is safe to interpolate.
+// validRecID gates a scheduled-recording id before it is interpolated into a
+// shell command. The id looks app-generated, but it actually arrives from the
+// host: ListScheduled reads it out of the remote .meta.json, and the frontend
+// echoes it back. A recording directory containing "$(reboot).meta.json" would
+// otherwise be a command injection.
+func validRecID(id string) bool {
+	return recIDRe.MatchString(id)
+}
+
+var recIDRe = regexp.MustCompile(`^rec-[0-9]{10,17}$`)
+
+// resolveRecFile locates a recording's on-host gz path across the candidate bases
+// (recordings may live on different partitions now). Both the id going out and
+// the path coming back are validated.
 func (m *Manager) resolveRecFile(s *session, id string) (string, error) {
+	if !validRecID(id) {
+		return "", fmt.Errorf("잘못된 기록 ID입니다: %q", id)
+	}
 	script := `for b in ` + recBasesSh(s) + `; do f="$b/.rtaskmgr-rec/` + id + `.ndjson.gz"; [ -e "$f" ] && { echo "$f"; exit 0; }; done`
 	out, _ := m.plainRun(s, script)
 	f := strings.TrimSpace(out)
 	if f == "" {
 		return "", fmt.Errorf("기록 파일을 찾지 못했습니다: %s", id)
+	}
+	if !validAbsPath(f) || !strings.HasSuffix(f, "/"+id+".ndjson.gz") {
+		return "", fmt.Errorf("기록 파일 경로를 사용할 수 없습니다: %s", f)
 	}
 	return f, nil
 }
@@ -885,10 +921,13 @@ func (m *Manager) resolveRecFile(s *session, id string) (string, error) {
 // recTargets probes the candidate filesystems for scheduled recordings,
 // reporting free space and whether the login user can write there directly (or
 // via sudo). Mountpoints are de-duplicated, preferring a directly-writable path.
+// The filesystem type comes from `stat -f -c %T` rather than `df -T`, because
+// with -P the added type column shifts every field df -P promised to keep fixed.
 func (m *Manager) recTargets(s *session) []RecTarget {
 	script := `for d in ` + recBasesSh(s) + `; do [ -d "$d" ] || continue; ` +
 		`w=0; [ -w "$d" ] && w=1; ` +
-		`df -P -B1 "$d" 2>/dev/null | awk -v p="$d" -v w="$w" 'NR==2{print "T|"p"|"$6"|"$2"|"$4"|"w}'; done`
+		`ft=$(stat -f -c %T "$d" 2>/dev/null || echo unknown); ` +
+		`df -P -B1 "$d" 2>/dev/null | awk -v p="$d" -v w="$w" -v t="$ft" 'NR==2{print "T|"p"|"$6"|"$2"|"$4"|"w"|"t}'; done`
 	out, _ := m.plainRun(s, script)
 	seen := map[string]int{} // mountpoint -> index in ts
 	var ts []RecTarget
@@ -896,8 +935,8 @@ func (m *Manager) recTargets(s *session) []RecTarget {
 		if !strings.HasPrefix(line, "T|") {
 			continue
 		}
-		p := strings.Split(line[2:], "|")
-		if len(p) != 5 {
+		p := strings.Split(strings.TrimSpace(line[2:]), "|")
+		if len(p) != 6 {
 			continue
 		}
 		mount, w := p[1], p[4] == "1"
@@ -915,7 +954,7 @@ func (m *Manager) recTargets(s *session) []RecTarget {
 		seen[mount] = len(ts)
 		ts = append(ts, RecTarget{
 			Path: p[0], Mount: mount, TotalBytes: total, FreeBytes: avail,
-			Writable: w, NeedsSudo: !w && s.elevated,
+			Writable: w, NeedsSudo: !w && s.elevated, FSType: p[5],
 		})
 	}
 	return ts
@@ -978,6 +1017,89 @@ func (m *Manager) EstimateScheduled(hostID string) (RecEstimate, error) {
 	return est, nil
 }
 
+// ensureUserDirStrict guarantees that dir exists, is a real directory (never a
+// symlink), is owned by the login uid, and is not group/other-writable — creating
+// it atomically with `install -d` when absent. It reports the reason on failure
+// and callers must refuse to start when it fails.
+//
+// It replaces `mkdir -p <dir> && chown <user> <dir>`, which is a root
+// privilege-escalation primitive whenever the parent is world-writable (1777, as
+// /tmp and /var/tmp are): `ln -s /etc <dir>` planted first turns the chown into
+// `chown liz /etc`, because mkdir -p succeeds when the symlink points at a
+// directory and GNU chown follows it. The old form also hijacked a directory
+// already owned by someone else, which would silently drop a colleague's
+// recordings out of their list.
+//
+// Once the directory is 0700 and owned by the login user, no third party can
+// plant anything inside it — which is what makes the capture sidecar files
+// (.pid/.done/.stop) safe to trust.
+func (m *Manager) ensureUserDirStrict(s *session, dir, mode string) error {
+	if !validAbsPath(dir) {
+		return fmt.Errorf("사용할 수 없는 경로입니다: %q", dir)
+	}
+	if mode != "0700" && mode != "0755" {
+		return fmt.Errorf("내부 오류: 지원하지 않는 권한 모드 %q", mode)
+	}
+	// ownArg is empty for the unprivileged attempt (we ARE the owner then) and
+	// "-o <uid>" for the sudo fallback, where root must hand the dir over.
+	script := func(ownArg string) string {
+		return `set -u; d=` + shellQuote(dir) + `; u=` + strconv.Itoa(s.uid) + `; mo=` + mode + `; ` +
+			`if [ -L "$d" ]; then echo ERR_SYMLINK; exit 3; fi; ` +
+			`if [ -e "$d" ]; then ` +
+			`[ -d "$d" ] || { echo ERR_NOTDIR; exit 3; }; ` +
+			`o=$(stat -c%u "$d" 2>/dev/null || echo -1); ` +
+			`[ "$o" = "$u" ] || { echo "ERR_OWNER:$(stat -c%U "$d" 2>/dev/null)"; exit 4; }; ` +
+			`pm=$(stat -c%a "$d" 2>/dev/null || echo 777); ` +
+			`[ "$(( 0$pm & 022 ))" = 0 ] || { echo ERR_PERM; exit 4; }; ` +
+			`chmod "$mo" "$d" 2>/dev/null || { echo ERR_CHMOD; exit 5; }; ` +
+			`echo OK; exit 0; fi; ` +
+			`install -d -m "$mo" ` + ownArg + ` "$d" 2>/dev/null || { echo ERR_MK; exit 5; }; echo OK`
+	}
+
+	out, _ := m.plainRun(s, script(""))
+	if strings.Contains(out, "OK") {
+		return nil
+	}
+	// Only "could not create it" is worth escalating. Every other failure means
+	// the path is already something we must not touch — retrying as root is
+	// exactly the escalation this function exists to prevent.
+	if !strings.Contains(out, "ERR_MK") {
+		return dirStrictErr(out, dir)
+	}
+	if !s.elevated || s.uid < 0 {
+		return fmt.Errorf("저장 위치를 만들 수 없습니다(권한 없음): %s", dir)
+	}
+	out2, _ := m.sudoRun(s, script(fmt.Sprintf("-o %d", s.uid)))
+	if strings.Contains(out2, "OK") {
+		return nil
+	}
+	return dirStrictErr(out2, dir)
+}
+
+// dirStrictErr turns ensureUserDirStrict's marker into a message that tells the
+// operator what to do next.
+func dirStrictErr(out, dir string) error {
+	switch {
+	case strings.Contains(out, "ERR_SYMLINK"):
+		return fmt.Errorf("저장 위치가 심볼릭 링크입니다(거부): %s — 다른 위치를 선택하세요", dir)
+	case strings.Contains(out, "ERR_NOTDIR"):
+		return fmt.Errorf("저장 위치가 디렉터리가 아닙니다: %s", dir)
+	case strings.Contains(out, "ERR_OWNER"):
+		owner := "다른"
+		if i := strings.Index(out, "ERR_OWNER:"); i >= 0 {
+			if v := strings.TrimSpace(tailLines(out[i+len("ERR_OWNER:"):], 1)); v != "" {
+				owner = v
+			}
+		}
+		return fmt.Errorf("저장 위치를 %s 사용자가 사용 중입니다: %s — 다른 위치를 선택하세요", owner, dir)
+	case strings.Contains(out, "ERR_PERM"):
+		return fmt.Errorf("저장 위치의 권한이 안전하지 않습니다(그룹/기타 쓰기 허용): %s", dir)
+	case strings.Contains(out, "ERR_CHMOD"):
+		return fmt.Errorf("저장 위치 권한 변경 실패: %s", dir)
+	}
+	return fmt.Errorf("저장 위치 준비 실패: %s (%s)", dir, tailLines(out, 2))
+}
+
 // StartScheduled launches a detached server-side recording that survives the
 // client disconnecting and self-stops after durationSec (hard-capped at 7 days).
 // The sampler writes gzip NDJSON and aborts early if the disk runs low. targetDir
@@ -1027,20 +1149,12 @@ func (m *Manager) StartScheduled(hostID string, durationSec, intervalSec int, ho
 	}
 	metaJSON, _ := json.Marshal(meta)
 
-	// Ensure the recording dir exists and the login user (which runs the detached
-	// sampler) can write it. If not, fall back to sudo: create + chown to the user.
-	mk := "mkdir -p " + recDir + " 2>/dev/null && test -w " + recDir + " && echo OK"
-	if out, _ := m.plainRun(s, mk); !strings.Contains(out, "OK") {
-		if !s.elevated {
-			return meta, fmt.Errorf("기록 위치에 쓸 수 없습니다(권한 없음): %s", base)
-		}
-		if s.user == "" {
-			return meta, fmt.Errorf("기록 위치를 생성할 사용자명을 알 수 없습니다")
-		}
-		sudoMk := fmt.Sprintf("mkdir -p %s && chown %s %s && echo OK", recDir, s.user, recDir)
-		if out2, err := m.sudoRun(s, sudoMk); err != nil || !strings.Contains(out2, "OK") {
-			return meta, fmt.Errorf("sudo로 기록 위치 생성 실패: %s", strings.TrimSpace(out2))
-		}
+	// Ensure the recording dir exists, is really ours and is safely permissioned.
+	// The old `mkdir -p && chown <user>` here was a root escalation primitive on a
+	// 1777 parent (see ensureUserDirStrict); a failure now refuses the start
+	// instead of recording into a directory we cannot vouch for.
+	if err := m.ensureUserDirStrict(s, recDir, "0700"); err != nil {
+		return meta, err
 	}
 	if err := uploadBytes(s.client, metaJSON, recDir+"/"+id+".meta.json", false); err != nil {
 		return meta, err
@@ -1068,12 +1182,22 @@ func (m *Manager) ListScheduled(hostID string) ([]RecMeta, error) {
 	// with its exit reason (deadline|signal|low-disk) ONLY on a clean shutdown; a
 	// server reboot / SIGKILL leaves no marker, which is how we detect an abnormal
 	// (interrupted) recording. base64 the marker so its content can't break parsing.
-	script := `for b in ` + recBasesSh(s) + `; do d="$b/.rtaskmgr-rec"; [ -d "$d" ] || continue; ` +
+	// Liveness is decided by walking /proc and requiring BOTH that the process is
+	// a sampler (comm) and that this recording's path is in its cmdline. Matching
+	// on the command line alone (the old `pgrep -f "$f"`) also matched this very
+	// shell, a concurrent download pipeline, and an operator's own `tail -f` on the
+	// file — which pinned a finished recording at "running" indefinitely.
+	script := `set -u; want=` + shellQuote(samplerComm()) + `; ` +
+		`for b in ` + recBasesSh(s) + `; do d="$b/.rtaskmgr-rec"; [ -d "$d" ] || continue; ` +
 		`for mf in "$d"/*.meta.json; do [ -e "$mf" ] || continue; ` +
 		`id=$(basename "$mf" .meta.json); f="$d/$id.ndjson.gz"; ` +
 		`sz=$(stat -c%s "$f" 2>/dev/null || echo 0); ` +
 		`mt=$(stat -c%Y "$f" 2>/dev/null || echo 0); ` +
-		`run=0; pgrep -f "$f" >/dev/null 2>&1 && run=1; ` +
+		`run=0; for e in /proc/[0-9]*; do [ "$run" = 1 ] && break; ` +
+		`[ -r "$e/comm" ] || continue; read -r k < "$e/comm" 2>/dev/null || continue; ` +
+		`[ "$k" = "$want" ] || continue; ` +
+		`c=$(tr '\0' ' ' < "$e/cmdline" 2>/dev/null) || continue; ` +
+		`case "$c" in *"$f"*) run=1;; esac; done; ` +
 		`dn=""; [ -e "$f.done" ] && dn=$(base64 -w0 "$f.done" 2>/dev/null); ` +
 		`echo "STAT|$id|$sz|$run|$mt|$dn"; echo "META|$(base64 -w0 "$mf")"; done; done`
 	out, err := m.plainRun(s, script)
@@ -1148,8 +1272,24 @@ func (m *Manager) ListScheduled(hostID string) ([]RecMeta, error) {
 	return out2, nil
 }
 
+// samplerComm is what /proc/<pid>/comm shows for the staged sampler: the
+// executable's basename truncated to TASK_COMM_LEN-1 (15) characters.
+func samplerComm() string {
+	if len(samplerName) > 15 {
+		return samplerName[:15]
+	}
+	return samplerName
+}
+
 // StopScheduled signals the sampler for one recording to stop; it finalizes the
 // gzip file cleanly on SIGTERM.
+//
+// It identifies the target by walking /proc and requiring BOTH that the process
+// is a sampler (comm) and that our exact recording path is in its cmdline. The
+// previous `pkill -TERM -f <file>` matched on the command line of every process,
+// which includes this very shell, any concurrent DownloadScheduled pipeline, and
+// an operator's own `tail`/`scp` on that path — the same family of bug as the
+// global `pkill -x nethogs` fixed in v1.4.2.
 func (m *Manager) StopScheduled(hostID, id string) error {
 	s := m.get(hostID)
 	if s == nil {
@@ -1159,9 +1299,19 @@ func (m *Manager) StopScheduled(hostID, id string) error {
 	if err != nil {
 		return err
 	}
-	_, err = m.plainRun(s,
-		"pkill -TERM -f "+file+" 2>/dev/null; sleep 1; "+
-			"pgrep -f "+file+" >/dev/null 2>&1 && pkill -KILL -f "+file+"; echo done")
+	script := `set -u; f=` + shellQuote(file) + `; want=` + shellQuote(samplerComm()) + `; kills=""; ` +
+		`for e in /proc/[0-9]*; do p=${e#/proc/}; ` +
+		`[ -r "$e/comm" ] || continue; ` +
+		`read -r k < "$e/comm" 2>/dev/null || continue; ` +
+		`[ "$k" = "$want" ] || continue; ` +
+		`c=$(tr '\0' ' ' < "$e/cmdline" 2>/dev/null) || continue; ` +
+		`case "$c" in *"$f"*) ;; *) continue;; esac; ` +
+		`kill -TERM "$p" 2>/dev/null && kills="$kills $p"; done; ` +
+		`i=0; while [ $i -lt 10 ]; do a=0; for p in $kills; do kill -0 "$p" 2>/dev/null && a=1; done; ` +
+		`[ "$a" = 0 ] && break; sleep 0.2; i=$((i+1)); done; ` +
+		`for p in $kills; do kill -0 "$p" 2>/dev/null && kill -KILL "$p" 2>/dev/null; done; ` +
+		`echo "STOPPED:$kills"`
+	_, err = m.plainRun(s, script)
 	return err
 }
 
@@ -1537,20 +1687,26 @@ func (m *Manager) DownloadScheduledSlices(hostID, id string, startMs, endMs int6
 	return frames, stride, nil
 }
 
-// keepAlive sends OpenSSH keepalive requests on client until ctx is cancelled or
-// the peer stops answering (a long, silent host-side download would otherwise be
-// dropped by an idle-timeout sshd).
-func keepAlive(ctx context.Context, client *ssh.Client) {
-	t := time.NewTicker(20 * time.Second)
-	defer t.Stop()
+// keepAlive sends OpenSSH keepalive requests until ctx is cancelled or the peer
+// stops answering (a long, silent host-side download would otherwise be dropped
+// by an idle-timeout sshd), and on a second, slower tick checks the host's packet
+// captures so the UI hears about a self-stop. Riding on this existing goroutine
+// keeps the watcher free: no new goroutine, no new connection.
+func (m *Manager) keepAlive(ctx context.Context, hostID string, s *session) {
+	ka := time.NewTicker(20 * time.Second)
+	defer ka.Stop()
+	cw := time.NewTicker(10 * time.Second)
+	defer cw.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
-			if _, _, err := client.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+		case <-ka.C:
+			if _, _, err := s.client.SendRequest("keepalive@openssh.com", true, nil); err != nil {
 				return
 			}
+		case <-cw.C:
+			m.watchCaptures(hostID, s)
 		}
 	}
 }
