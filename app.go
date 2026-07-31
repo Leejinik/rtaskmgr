@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -121,12 +122,27 @@ func (a *App) startup(ctx context.Context) {
 	a.updater = updater.New(updater.Config{
 		Owner:          "Leejinik",
 		Repo:           "rtaskmgr",
-		AssetName:      "rtaskmgr.exe",
+		AssetName:      releaseAssetName(),
 		CurrentVersion: a.version,
 		ConfigDir:      cfgDir,
 	})
 	if exe, err := os.Executable(); err == nil {
 		a.updater.CleanupLeftovers(exe)
+	}
+}
+
+// releaseAssetName is the GitHub Release asset this build should look for. It
+// must match the filenames produced by .github/workflows/release.yml character
+// for character: when the GitHub API is rate-limited the updater falls back to
+// assembling the download URL from this name (see internal/updater/updater.go).
+func releaseAssetName() string {
+	switch runtime.GOOS {
+	case "linux":
+		// e.g. rtaskmgr-linux-amd64. GOARCH keeps this honest if an arm64 job is
+		// ever added to the workflow.
+		return "rtaskmgr-linux-" + runtime.GOARCH
+	default:
+		return "rtaskmgr.exe"
 	}
 }
 
@@ -864,6 +880,12 @@ func (a *App) MarkReleaseNotesSeen() error {
 // replacing executables (in the field it left the app with no runnable binary).
 // It fires at most once per install, guarded by a marker file in the config dir.
 func (a *App) ShowUpdateModeNoticeOnce() {
+	// Windows-only: the corporate EDR product this explains only runs there, and
+	// other platforms never had a self-replacing updater to begin with (see
+	// internal/updater/apply_other.go).
+	if runtime.GOOS != "windows" {
+		return
+	}
 	home, _ := os.UserHomeDir()
 	dir := filepath.Join(home, ".rtaskmgr")
 	marker := filepath.Join(dir, "update-mode-notice.seen")

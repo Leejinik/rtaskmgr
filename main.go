@@ -39,6 +39,7 @@ func main() {
 		BackgroundColour: &options.RGBA{R: 32, G: 32, B: 32, A: 1},
 		OnStartup:        app.startup,
 		OnBeforeClose:    app.beforeClose,
+		Linux:            linuxOptions(),
 		Bind: []interface{}{
 			app,
 		},

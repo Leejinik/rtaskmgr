@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - 'v*'
+  # Lets us smoke-test the build jobs without cutting a release. On a manual run
+  # the `release` job is skipped and the binaries are left as artifacts.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,8 +16,6 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -27,6 +28,18 @@ jobs:
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          # Tag pushes get the tag as the build version; manual runs stay "dev"
+          # so a smoke-test binary never nags about updates.
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "version=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
 
@@ -37,29 +50,110 @@ jobs:
       - name: Build
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
-          wails build -platform windows/amd64 -ldflags "-X main.Version=$tag"
+          wails build -platform windows/amd64 -ldflags "-X main.Version=${{ steps.ver.outputs.version }}"
           if (-not (Test-Path "build/bin/rtaskmgr.exe")) {
             throw "build/bin/rtaskmgr.exe not produced"
           }
 
-      - name: Generate release notes from commits
-        id: notes
-        shell: pwsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rtaskmgr-windows
+          path: build/bin/rtaskmgr.exe
+          if-no-files-found: error
+
+  build-linux:
+    # Pinned to 24.04, NOT ubuntu-latest: the build host's glibc sets the floor
+    # for which distros the binary runs on. 24.04 covers Ubuntu 24.04 through
+    # 26.04 LTS. Building on 26.04 would break 24.04 users.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Resolve version
+        id: ver
         run: |
-          $tag = "${{ github.ref_name }}"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "version=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm install
+
+      - name: Build
+        run: |
+          # -tags webkit2_41 is required: Ubuntu dropped webkit2gtk-4.0 in 24.04,
+          # and Wails v2 still defaults its pkg-config to 4.0 without this tag.
+          wails build -platform linux/amd64 -tags webkit2_41 \
+            -ldflags "-X main.Version=${{ steps.ver.outputs.version }}"
+          test -f build/bin/rtaskmgr
+          mv build/bin/rtaskmgr build/bin/rtaskmgr-linux-amd64
+
+      - name: Report linked libraries and glibc floor
+        run: |
+          ldd build/bin/rtaskmgr-linux-amd64 || true
+          echo "max required glibc: $(objdump -T build/bin/rtaskmgr-linux-amd64 \
+            | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rtaskmgr-linux
+          path: build/bin/rtaskmgr-linux-amd64
+          if-no-files-found: error
+
+  release:
+    needs: [build-windows, build-linux]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate release notes from commits
+        run: |
+          tag="$GITHUB_REF_NAME"
           # Find the previous tag (excluding this one). If none, fall back to
           # the entire history.
-          $prev = git tag --sort=-v:refname | Where-Object { $_ -ne $tag } | Select-Object -First 1
-          if ($prev) {
-            $range = "$prev..$tag"
-          } else {
-            $range = $tag
-          }
-          $body = git log $range --pretty=format:"- %s" --no-merges
-          if (-not $body) { $body = "- $tag" }
-          $header = "## $tag`r`n`r`n"
-          ($header + ($body -join "`r`n")) | Out-File -FilePath release-notes.md -Encoding utf8
+          prev=$(git tag --sort=-v:refname | grep -vxF "$tag" | head -n1)
+          if [ -n "$prev" ]; then
+            range="$prev..$tag"
+          else
+            range="$tag"
+          fi
+          body=$(git log "$range" --pretty=format:"- %s" --no-merges)
+          if [ -z "$body" ]; then
+            body="- $tag"
+          fi
+          printf '## %s\n\n%s\n' "$tag" "$body" > release-notes.md
+          cat release-notes.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -67,6 +161,8 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           body_path: release-notes.md
-          files: build/bin/rtaskmgr.exe
+          files: |
+            dist/rtaskmgr.exe
+            dist/rtaskmgr-linux-amd64
           draft: false
           prerelease: false

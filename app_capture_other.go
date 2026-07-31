@@ -1,5 +1,7 @@
-//go:build !windows
+//go:build !windows && !linux
 
+// The `open`/`/Applications` calls below are macOS, so this file must not cover
+// Linux — see app_capture_linux.go, which uses xdg-open and PATH instead.
 package main
 
 import (
