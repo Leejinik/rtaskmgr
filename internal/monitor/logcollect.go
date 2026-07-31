@@ -208,11 +208,13 @@ type LogEntry struct {
 	Rel       string `json:"rel"`
 	SizeBytes int64  `json:"sizeBytes"`
 	MtimeMs   int64  `json:"mtimeMs"`
-	// Cut is set when only part of the file was taken (a date range that starts
-	// inside it). The archived name carries the same marker so a partial file can
-	// never be mistaken for a complete one.
+	// Cut is set when only part of the file was taken (a date range that starts or
+	// ends inside it). The archived name carries the same marker so a partial file
+	// can never be mistaken for a complete one — and, per the rule that the marker
+	// must not lie, ONLY a file that was really trimmed gets one.
 	Cut     bool   `json:"cut"`
-	CutFrom string `json:"cutFrom,omitempty"` // "20260630"
+	CutFrom string `json:"cutFrom,omitempty"` // "20260630", when the head was trimmed
+	CutTo   string `json:"cutTo,omitempty"`   // "20260705", when the tail was trimmed
 	// Coverage is what the file actually spans, once known.
 	FirstMs int64  `json:"firstMs,omitempty"`
 	LastMs  int64  `json:"lastMs,omitempty"`
@@ -221,6 +223,39 @@ type LogEntry struct {
 	// DupOf names the archive path this entry was folded into when two categories
 	// claimed the same file.
 	DupOf string `json:"dupOf,omitempty"`
+	// Action is what T1 decided to do with this file (LogT1*), overwritten with what
+	// the host actually did (LogTake*) once the copy has run.
+	Action string `json:"action,omitempty"`
+	// Note explains anything the operator would otherwise have to guess: why a file
+	// was taken whole despite a range, how much of it the filter understood.
+	Note string `json:"note,omitempty"`
+	// Arch is this entry's resolved path inside the archive. It is assigned once, by
+	// assignArchivePaths, because two distinct source names can sanitise to the same
+	// segment (any two non-ASCII filenames both become "_") and silently overwriting
+	// a file inside the archive would lose exactly the log someone came for.
+	Arch string `json:"arch,omitempty"`
+	// ArchWhole is the name the same file takes when it turns out NOT to be trimmed.
+	// Both names are reserved up front so that the host's late decision to take a
+	// file whole cannot land it on top of another file's path.
+	ArchWhole string `json:"archWhole,omitempty"`
+}
+
+// cutMark renders the ".from-…"/".to-…" suffix for a trimmed file, or "" when the
+// file is whole. A marker on an untrimmed file is a lie, so this is the only place
+// one is produced.
+func (e LogEntry) cutMark() string {
+	if !e.Cut {
+		return ""
+	}
+	switch {
+	case e.CutFrom != "" && e.CutTo != "":
+		return "from-" + e.CutFrom + "-to-" + e.CutTo
+	case e.CutFrom != "":
+		return "from-" + e.CutFrom
+	case e.CutTo != "":
+		return "to-" + e.CutTo
+	}
+	return ""
 }
 
 // ServerIdent is what a server is called, for naming its archive directory.
@@ -269,6 +304,11 @@ func sanitizeSegment(s string) string {
 	}
 	return s
 }
+
+// ServerDirNames assigns archive directory names across a whole set of hosts. It is
+// exported because the collision handling only works when it sees the cluster: called
+// once per host it can never notice that two of them answer the same hostname.
+func ServerDirNames(items []ServerIdent) map[string]string { return serverDirNames(items) }
 
 // serverDirNames assigns each host a unique archive directory name.
 //
@@ -319,7 +359,10 @@ func serverDirNames(items []ServerIdent) map[string]string {
 
 // archivePathFor assembles "<server>/<category>/<module>/<rel>", sanitising every
 // segment. It refuses anything that would escape the server directory.
-func archivePathFor(serverDir, category, module, rel string, cut bool, cutFrom string) (string, error) {
+//
+// cutMark is "" for a complete file, or the marker body ("from-20260630") for one
+// that was trimmed to the requested window.
+func archivePathFor(serverDir, category, module, rel string, cutMark string) (string, error) {
 	sd := sanitizeSegment(serverDir)
 	cat := sanitizeSegment(category)
 	if sd == "" || cat == "" {
@@ -346,12 +389,12 @@ func archivePathFor(serverDir, category, module, rel string, cut bool, cutFrom s
 	}
 	// The cut marker goes on the LAST segment, so a partial file is obvious wherever
 	// it is seen — in the archive, after extraction, and in a mail attachment.
-	if cut {
-		f := sanitizeSegment(cutFrom)
+	if cutMark != "" {
+		f := sanitizeSegment(cutMark)
 		if f == "" {
 			return "", fmt.Errorf("잘린 파일의 기준 날짜가 없습니다")
 		}
-		relParts[len(relParts)-1] += ".from-" + f
+		relParts[len(relParts)-1] += "." + f
 	}
 	full := path.Join(append(parts, relParts...)...)
 	// path.Join already cleans, but assert the result really is inside the server
@@ -360,6 +403,68 @@ func archivePathFor(serverDir, category, module, rel string, cut bool, cutFrom s
 		return "", fmt.Errorf("아카이브 경로가 서버 디렉터리를 벗어납니다: %q", full)
 	}
 	return full, nil
+}
+
+// assignArchivePaths gives every collectable entry its place in the archive and
+// guarantees those places are distinct.
+//
+// The uniqueness pass is not defensive programming. sanitizeSegment maps everything
+// outside [A-Za-z0-9._-] to "_", so two files whose names differ only in non-ASCII
+// characters — "수집.log" and "장애.log", or "a b.log" next to an existing "a_b.log"
+// — arrive at the same archive path, and cp would overwrite one with the other. The
+// operator would see a plausible archive with one of the two logs simply absent, and
+// the manifest would claim both were collected. Renaming the collision keeps both
+// files and keeps the manifest true.
+func assignArchivePaths(serverDir string, entries []LogEntry) []LogEntry {
+	out := make([]LogEntry, len(entries))
+	copy(out, entries)
+	used := make(map[string]bool, len(entries))
+	for i := range out {
+		if out[i].Skipped != "" || out[i].DupOf != "" {
+			continue
+		}
+		plain, err := archivePathFor(serverDir, out[i].Category, out[i].Module, out[i].Rel, "")
+		if err != nil {
+			out[i].Skipped = err.Error()
+			continue
+		}
+		if used[plain] {
+			plain = uniqueArchivePath(plain, used)
+		}
+		used[plain] = true
+		out[i].ArchWhole = plain
+		out[i].Arch = plain
+
+		// A file the range will trim gets a second, marked name reserved for it. Both
+		// are held because the host decides between them only once it has read the
+		// file, and by then it is too late to resolve a collision.
+		if mark := out[i].cutMark(); mark != "" {
+			cut, cerr := archivePathFor(serverDir, out[i].Category, out[i].Module, out[i].Rel, mark)
+			if cerr != nil {
+				continue // keep the plain name; the marker was unusable
+			}
+			if used[cut] {
+				cut = uniqueArchivePath(cut, used)
+			}
+			used[cut] = true
+			out[i].Arch = cut
+		}
+	}
+	return out
+}
+
+// uniqueArchivePath appends _2, _3 … to a name that is already taken.
+func uniqueArchivePath(p string, used map[string]bool) string {
+	dir, base := path.Split(p)
+	ext := path.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	for n := 2; n < 100000; n++ {
+		cand := dir + stem + "_" + strconv.Itoa(n) + ext
+		if !used[cand] {
+			return cand
+		}
+	}
+	return p
 }
 
 // categoryRank orders the categories for deterministic output.
@@ -533,19 +638,27 @@ func renderManifest(server ServerIdent, dirName string, entries []LogEntry, from
 		"분류", "모듈", "아카이브 경로", "원본", "크기", "비고")
 	fmt.Fprintf(&b, "%s\n", strings.Repeat("-", 150))
 	for _, e := range live {
-		ap, err := archivePathFor(dirName, e.Category, e.Module, e.Rel, e.Cut, e.CutFrom)
-		if err != nil {
+		ap := archPathOf(dirName, e)
+		if ap == "" {
 			ap = "(경로 오류)"
 		}
 		note := "온전"
-		if e.Cut {
+		switch {
+		case e.Cut && e.CutFrom != "" && e.CutTo != "":
+			note = fmt.Sprintf("%s 이전과 %s 이후를 잘라냄", e.CutFrom, e.CutTo)
+		case e.Cut && e.CutFrom != "":
 			note = fmt.Sprintf("%s 이전을 잘라냄", e.CutFrom)
+		case e.Cut && e.CutTo != "":
+			note = fmt.Sprintf("%s 이후를 잘라냄", e.CutTo)
 		}
 		if e.IsCmd {
 			note = "명령 출력"
 		}
 		if e.FirstMs > 0 || e.LastMs > 0 {
 			note += fmt.Sprintf(" · %s~%s", msDate(e.FirstMs), msDate(e.LastMs))
+		}
+		if e.Note != "" {
+			note += " · " + e.Note
 		}
 		fmt.Fprintf(&b, "%-11s %-16s %-46s %-52s %10s %s\n",
 			e.Category, e.Module, strings.TrimPrefix(ap, dirName+"/"), e.Source, humanBytes(e.SizeBytes), note)
@@ -591,8 +704,8 @@ func renderManifest(server ServerIdent, dirName string, entries []LogEntry, from
 		for _, k := range keys {
 			names := make([]string, 0, len(groups[k]))
 			for _, e := range groups[k] {
-				ap, err := archivePathFor(dirName, e.Category, e.Module, e.Rel, e.Cut, e.CutFrom)
-				if err != nil {
+				ap := archPathOf(dirName, e)
+				if ap == "" {
 					continue
 				}
 				names = append(names, path.Base(ap))
@@ -601,6 +714,19 @@ func renderManifest(server ServerIdent, dirName string, entries []LogEntry, from
 		}
 	}
 	return b.String()
+}
+
+// archPathOf is the entry's assigned archive path, recomputed only when the
+// assignment pass has not run (a plan that was never collected).
+func archPathOf(dirName string, e LogEntry) string {
+	if e.Arch != "" {
+		return e.Arch
+	}
+	p, err := archivePathFor(dirName, e.Category, e.Module, e.Rel, e.cutMark())
+	if err != nil {
+		return ""
+	}
+	return p
 }
 
 func msDate(ms int64) string {
@@ -692,14 +818,24 @@ func overSizeCap(bytes int64) bool { return bytes > logSizeCapBytes }
 // journalCmd builds the journalctl invocation for the requested window and units.
 // Unit names are validated with the same rule the service actions use, so a unit
 // list can never carry shell syntax into the command.
-func journalCmd(fromMs, toMs int64, units []string, maxBytes int64) (string, error) {
+//
+// It deliberately does NOT bound the output itself. An earlier version appended
+// `| head -c N`, which made the pipeline's exit status head's — always 0 — so a
+// journalctl that failed outright, and a journal that was cut off at the cap, both
+// came back as a clean success with an empty or truncated file and no note anywhere.
+// The size bound belongs in the copy script, which applies it to every command
+// module and can tell the two apart.
+//
+// The window is passed as an absolute instant (@epoch). A wall-clock string would be
+// read by journald in the host's zone while Go rendered it in the client's.
+func journalCmd(fromMs, toMs int64, units []string) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("journalctl --no-pager -o short-iso")
 	if fromMs > 0 {
-		sb.WriteString(" --since " + shellQuote(time.UnixMilli(fromMs).Format("2006-01-02 15:04:05")))
+		sb.WriteString(" --since " + shellQuote("@"+strconv.FormatInt(fromMs/1000, 10)))
 	}
 	if toMs > 0 {
-		sb.WriteString(" --until " + shellQuote(time.UnixMilli(toMs).Format("2006-01-02 15:04:05")))
+		sb.WriteString(" --until " + shellQuote("@"+strconv.FormatInt(toMs/1000, 10)))
 	}
 	for _, u := range units {
 		u = strings.TrimSpace(u)
@@ -710,11 +846,6 @@ func journalCmd(fromMs, toMs int64, units []string, maxBytes int64) (string, err
 			return "", fmt.Errorf("유닛 이름을 사용할 수 없습니다: %q", u)
 		}
 		sb.WriteString(" -u " + shellQuote(u))
-	}
-	if maxBytes > 0 {
-		// Bound the output: a journal with no unit filter easily runs to gigabytes,
-		// and the whole point of the size gate is that nothing unbounded is copied.
-		sb.WriteString(" | head -c " + strconv.FormatInt(maxBytes, 10))
 	}
 	return sb.String(), nil
 }

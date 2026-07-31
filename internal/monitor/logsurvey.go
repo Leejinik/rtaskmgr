@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
+	"sync"
 )
 
 // LogModuleStat is one row of the collection tree: what a module holds on one host.
@@ -48,7 +48,7 @@ type LogSurvey struct {
 }
 
 // logFindExpr renders the find predicates for one module.
-func logFindExpr(def LogModuleDef, fromMs int64, loc *time.Location) string {
+func logFindExpr(def LogModuleDef, fromMs int64) string {
 	var sb strings.Builder
 	if !def.Recursive {
 		sb.WriteString(" -maxdepth 1")
@@ -77,8 +77,16 @@ func logFindExpr(def LogModuleDef, fromMs int64, loc *time.Location) string {
 	// old. Never the other way round: an upper bound here would drop every
 	// never-rotated active log (mariadb.err, redis.log, clickhouse-server.log) from a
 	// past-window request and the operator would get whole modules missing.
+	//
+	// The boundary is an ABSOLUTE instant (@epoch), never a wall-clock string. A
+	// formatted "2026-07-01 00:00:00" carries no offset, so find parses it in the
+	// HOST's zone while Go rendered it in the CLIENT's: against a RHEL box left at
+	// TZ=UTC with a KST operator, the threshold moves nine hours forward and every
+	// file last written in the first nine hours of the window is dropped — not
+	// filtered, not summarised, simply never enumerated, so it leaves no trace in the
+	// manifest either. classifyFile compares absolute instants; so must this.
 	if fromMs > 0 {
-		sb.WriteString(" -newermt " + shellQuote(time.UnixMilli(fromMs).In(loc).Format("2006-01-02 15:04:05")))
+		sb.WriteString(" -newermt " + shellQuote("@"+strconv.FormatInt(fromMs/1000, 10)))
 	}
 	return sb.String()
 }
@@ -90,7 +98,7 @@ func logFindExpr(def LogModuleDef, fromMs int64, loc *time.Location) string {
 // every file just to draw the tree would ship megabytes per host for numbers the
 // operator only wants as a total. The file list is enumerated later, only for the
 // modules actually selected.
-func logSurveyScript(cat LogCatalog, fromMs int64, loc *time.Location) string {
+func logSurveyScript(cat LogCatalog, fromMs int64) string {
 	b64 := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 
 	var sb strings.Builder
@@ -129,7 +137,7 @@ rtm_agg(){
 		// Discovered modules: the glob's matched directory becomes a module, so a
 		// module deployed after this build still shows up.
 		for _, g := range c.DiscoverGlobs {
-			expr := logFindExpr(LogModuleDef{}, fromMs, loc)
+			expr := logFindExpr(LogModuleDef{}, fromMs)
 			sb.WriteString("for gd in " + g + "; do [ -d \"$gd\" ] || continue\n")
 			sb.WriteString("  RTM_KIND=G; RTM_CAT=" + shellQuote(c.Key) +
 				"; RTM_MOD=-; RTM_DIR=$gd; RTM_FIND=" + shellQuote(expr) + "; rtm_agg\ndone\n")
@@ -142,7 +150,7 @@ rtm_agg(){
 					shellQuote(c.Key) + " " + shellQuote(d.Name) + " " + shellQuote(b64(d.Cmd)) + "\n")
 				continue
 			}
-			expr := logFindExpr(d, fromMs, loc)
+			expr := logFindExpr(d, fromMs)
 			for _, p := range d.Paths {
 				emit("M", c.Key, d.Name, p, expr)
 			}
@@ -252,6 +260,44 @@ func dedupeModuleStats(mods []LogModuleStat) []LogModuleStat {
 	return out
 }
 
+// DefaultLogCatalog is the shipped catalog, for the UI to show and the settings
+// store to seed a first edit from.
+func DefaultLogCatalog() LogCatalog { return defaultLogCatalog() }
+
+// LogSurveyCluster surveys several hosts at once and assigns each one the archive
+// directory it will occupy.
+//
+// The names are assigned HERE, across the whole set, rather than per host: two boxes
+// in one data centre both answering "localhost.localdomain" would otherwise merge
+// their logs into a single directory, and the operator would have no way to tell
+// whose kafka log they were reading.
+func (m *Manager) LogSurveyCluster(hosts []ServerIdent, cat LogCatalog, fromMs int64) []LogSurvey {
+	if len(cat.Categories) == 0 {
+		cat = defaultLogCatalog()
+	}
+	dirs := serverDirNames(hosts)
+	out := make([]LogSurvey, len(hosts))
+	var wg sync.WaitGroup
+	for i, h := range hosts {
+		wg.Add(1)
+		go func(i int, h ServerIdent) {
+			defer wg.Done()
+			sv, err := m.LogSurveyFor(h.HostID, cat, fromMs)
+			if err != nil {
+				sv = LogSurvey{HostID: h.HostID, Err: err.Error()}
+			}
+			sv.HostName = h.DisplayName
+			if sv.Hostname == "" {
+				sv.Hostname = h.Hostname
+			}
+			sv.DirName = dirs[h.HostID]
+			out[i] = sv
+		}(i, h)
+	}
+	wg.Wait()
+	return out
+}
+
 // LogSurveyFor surveys one host. It runs elevated when it can: /var/log/messages and
 // /var/log/audit are 0600 root:root, so an unprivileged survey would report the
 // system category as unreadable even though the collection would succeed.
@@ -263,7 +309,7 @@ func (m *Manager) LogSurveyFor(hostID string, cat LogCatalog, fromMs int64) (Log
 	if len(cat.Categories) == 0 {
 		cat = defaultLogCatalog()
 	}
-	script := logSurveyScript(cat, fromMs, time.Local)
+	script := logSurveyScript(cat, fromMs)
 
 	var out string
 	if s.elevated {

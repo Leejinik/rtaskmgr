@@ -31,9 +31,12 @@ type App struct {
 	rpmFS fs.FS
 
 	// pcapLocal remembers where downloaded captures landed on this PC; capDL
-	// tracks in-flight transfers so they can be cancelled.
+	// tracks in-flight transfers so they can be cancelled. logDL is the same for
+	// log-collection archives, kept separate so cancelling one does not abort the
+	// other.
 	pcapLocal *store.PcapLocal
 	capDL     capDownloads
+	logDL     capDownloads
 
 	// version is set from main() after NewApp(); the updater is built in
 	// startup() once the config dir is known. Empty version → "dev" → updater off.
@@ -891,6 +894,9 @@ func (a *App) beforeClose(ctx context.Context) bool {
 		a.rec.StopFile()
 	}
 	a.capDL.cancelAll()
+	// A log collection that is mid-transfer leaves its archive on the host, which is
+	// the retryable state — and the leftovers section is where it will be found.
+	a.logDL.cancelAll()
 	a.mgr.StopAll()
 	return false
 }

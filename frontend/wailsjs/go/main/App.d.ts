@@ -11,7 +11,11 @@ export function ApplyUpdate(arg1:updater.UpdateInfo):Promise<void>;
 
 export function AutoUpdate():Promise<updater.AutoUpdateResult>;
 
+export function BundleLogCollect(arg1:string):Promise<string>;
+
 export function CancelCaptureDownload(arg1:string,arg2:string):Promise<void>;
+
+export function CancelLogCollect():Promise<void>;
 
 export function CaptureEnv(arg1:string):Promise<monitor.CapEnv>;
 
@@ -23,6 +27,10 @@ export function CheckForUpdate():Promise<updater.UpdateInfo>;
 
 export function ChooseCaptureSavePath(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<string>;
 
+export function ChooseLogCollectFolder():Promise<string>;
+
+export function CollectLogs(arg1:Array<main.LogCollectTask>,arg2:string):Promise<main.LogCollectResult>;
+
 export function Connect(arg1:string,arg2:number):Promise<monitor.Capabilities>;
 
 export function ConnectMany(arg1:Array<string>,arg2:number):Promise<Array<main.ClusterConnectResult>>;
@@ -30,6 +38,8 @@ export function ConnectMany(arg1:Array<string>,arg2:number):Promise<Array<main.C
 export function DeleteCapture(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteHost(arg1:string):Promise<void>;
+
+export function DeleteLogCollectLeftover(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteScheduled(arg1:string,arg2:string):Promise<void>;
 
@@ -67,6 +77,14 @@ export function LocalCapturePath(arg1:string,arg2:string):Promise<string>;
 
 export function LocalOperator():Promise<string>;
 
+export function LogCollectCatalog():Promise<monitor.LogCatalog>;
+
+export function LogCollectLeftovers(arg1:Array<string>):Promise<Array<monitor.LogLeftover>>;
+
+export function LogCollectPlan(arg1:string,arg2:monitor.LogRequest):Promise<monitor.LogPlan>;
+
+export function LogCollectSurvey(arg1:Array<string>,arg2:number):Promise<Array<monitor.LogSurvey>>;
+
 export function LogFrameAt(arg1:string,arg2:number):Promise<monitor.Frame>;
 
 export function LogFrameCount(arg1:string):Promise<number>;
@@ -85,6 +103,8 @@ export function OpenCaptureFolder(arg1:string,arg2:string):Promise<void>;
 
 export function OpenInWireshark(arg1:string,arg2:string):Promise<void>;
 
+export function OpenLogCollectFolder(arg1:string):Promise<void>;
+
 export function OpenLogDialog():Promise<main.LogMeta>;
 
 export function PasswordStatus(arg1:string):Promise<monitor.PwStatus>;
@@ -99,9 +119,13 @@ export function PwLedger(arg1:string):Promise<Array<pwledger.Entry>>;
 
 export function RenewPasswords(arg1:string):Promise<void>;
 
+export function ResetLogCollectCatalog():Promise<monitor.LogCatalog>;
+
 export function SaveHost(arg1:host.Host):Promise<host.Host>;
 
 export function SaveHosts(arg1:Array<host.Host>):Promise<Array<host.Host>>;
+
+export function SaveLogCollectCatalog(arg1:monitor.LogCatalog):Promise<void>;
 
 export function ServiceAction(arg1:string,arg2:string,arg3:string):Promise<void>;
 

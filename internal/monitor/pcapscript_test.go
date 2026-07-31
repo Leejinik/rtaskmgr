@@ -18,7 +18,7 @@ import (
 func scriptSources(t *testing.T) map[string]string {
 	t.Helper()
 	out := map[string]string{}
-	for _, f := range []string{"monitor.go", "pcap.go", "passwd.go"} {
+	for _, f := range []string{"monitor.go", "pcap.go", "passwd.go", "download.go", "logcollect_run.go"} {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatalf("read %s: %v", f, err)
@@ -407,10 +407,10 @@ func TestForgetKeepsTheCaptureFile(t *testing.T) {
 // watchdog fires a minute later — and the operator is then told the connection
 // died when their disk was actually full.
 func TestDownloadHandlesCopyErrorBeforeWait(t *testing.T) {
-	src := scriptSources(t)["pcap.go"]
-	i := strings.Index(src, "func (m *Manager) DownloadCaptureTo")
+	src := scriptSources(t)["download.go"]
+	i := strings.Index(src, "func (m *Manager) streamRemoteFile")
 	if i < 0 {
-		t.Fatal("DownloadCaptureTo not found")
+		t.Fatal("streamRemoteFile not found")
 	}
 	body := src[i:]
 	if j := strings.Index(body, "\nfunc "); j > 0 {
@@ -430,12 +430,13 @@ func TestDownloadHandlesCopyErrorBeforeWait(t *testing.T) {
 	}
 }
 
-// TestNoBase64WholeFileInCapturePath pins invariant I8 for the download path.
+// TestNoBase64WholeFileInCapturePath pins invariant I8 for the download path — now
+// shared by the packet capture and the log archive, so a regression here breaks both.
 func TestNoBase64WholeFileInCapturePath(t *testing.T) {
-	src := scriptSources(t)["pcap.go"]
-	i := strings.Index(src, "func (m *Manager) DownloadCaptureTo")
+	src := scriptSources(t)["download.go"]
+	i := strings.Index(src, "func (m *Manager) streamRemoteFile")
 	if i < 0 {
-		t.Fatal("DownloadCaptureTo not found")
+		t.Fatal("streamRemoteFile not found")
 	}
 	body := src[i:]
 	if j := strings.Index(body, "\nfunc "); j > 0 {
@@ -443,14 +444,14 @@ func TestNoBase64WholeFileInCapturePath(t *testing.T) {
 	}
 	for _, banned := range []string{"base64 -w0", "CombinedOutput"} {
 		if strings.Contains(body, banned) {
-			t.Errorf("the download path must not use %q on a multi-GB capture", banned)
+			t.Errorf("the download path must not use %q on a multi-GB file", banned)
 		}
 	}
 	if !strings.Contains(body, "StdoutPipe") || !strings.Contains(body, "sess.Stderr") {
 		t.Error("the download must stream stdout with stderr kept separate")
 	}
 	if !strings.Contains(body, "head -c ") {
-		t.Error("the download must pin the byte count with head -c (a running capture keeps growing)")
+		t.Error("the download must pin the byte count with head -c (a file being written keeps growing)")
 	}
 }
 

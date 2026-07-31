@@ -244,31 +244,36 @@ func logFilterArgs(progPath string, sKey, eKey string, seedYear int) string {
 }
 
 // hostRangeKeys renders the shell that turns the requested window into the numeric
-// keys the filter compares against, evaluated on the host with an explicit TZ.
+// keys the filter compares against, evaluated ON THE HOST.
 //
-// Computing these on the client is a real bug source: a Wails date picker produces a
-// local-time instant, and a host started with TZ=UTC writes timestamps nine hours
-// away from it, so a boundary chosen as "06-30 00:00" silently lands at "06-29
-// 15:00" or misses the first nine hours of the day.
+// The keys are compared against timestamps the SERVICE wrote, which are in the
+// host's local time. So the boundary has to be the requested instant expressed in
+// the host's local time, and the only way to get that is to hand the host an
+// absolute instant and let it do the conversion: `date -d @<epoch>`.
+//
+// The earlier form passed a wall-clock string — `date -d '2026-06-30 00:00:00'` —
+// under an exported TZ, which is the identity function: date parsed it in TZ and
+// printed it back in TZ, so every TZ produced the same digits and the boundary was
+// always the operator's wall clock compared against the host's. On a host running
+// TZ=UTC with a KST operator that is a nine-hour error in the direction that DELETES
+// content, and no parameter value could correct it.
+//
+// tz is an explicit override for a host whose own zone is wrong; empty (the normal
+// case) means "use the host's own zone", which is by definition the one its logs are
+// written in.
 func hostRangeKeys(fromMs, toMs int64, tz string) string {
-	if tz == "" {
-		tz = "Asia/Seoul"
-	}
-	q := func(ms int64) string {
-		if ms <= 0 {
-			return "0"
-		}
-		return shellQuote(time.UnixMilli(ms).Format("2006-01-02 15:04:05"))
-	}
 	var sb strings.Builder
-	sb.WriteString("export TZ=" + shellQuote(tz) + "; ")
+	if tz != "" {
+		sb.WriteString("export TZ=" + shellQuote(tz) + "; ")
+	}
+	at := func(ms int64) string { return "@" + strconv.FormatInt(ms/1000, 10) }
 	if fromMs > 0 {
-		sb.WriteString("S=$(date -d " + q(fromMs) + " +%Y%m%d%H%M%S); ")
+		sb.WriteString("S=$(date -d " + shellQuote(at(fromMs)) + " +%Y%m%d%H%M%S); ")
 	} else {
 		sb.WriteString("S=0; ")
 	}
 	if toMs > 0 {
-		sb.WriteString("E=$(date -d " + q(toMs) + " +%Y%m%d%H%M%S); ")
+		sb.WriteString("E=$(date -d " + shellQuote(at(toMs)) + " +%Y%m%d%H%M%S); ")
 	} else {
 		sb.WriteString("E=0; ")
 	}

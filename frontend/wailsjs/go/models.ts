@@ -102,6 +102,106 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class LogCollectHostResult {
+	    hostId: string;
+	    name: string;
+	    serverDir: string;
+	    path: string;
+	    bytes: number;
+	    files: number;
+	    cleaned: boolean;
+	    err?: string;
+	    leftOnHost?: string;
+	    collectId?: string;
+	    target?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LogCollectHostResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hostId = source["hostId"];
+	        this.name = source["name"];
+	        this.serverDir = source["serverDir"];
+	        this.path = source["path"];
+	        this.bytes = source["bytes"];
+	        this.files = source["files"];
+	        this.cleaned = source["cleaned"];
+	        this.err = source["err"];
+	        this.leftOnHost = source["leftOnHost"];
+	        this.collectId = source["collectId"];
+	        this.target = source["target"];
+	    }
+	}
+	export class LogCollectResult {
+	    dir: string;
+	    hosts: LogCollectHostResult[];
+	    ok: number;
+	    failed: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LogCollectResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dir = source["dir"];
+	        this.hosts = this.convertValues(source["hosts"], LogCollectHostResult);
+	        this.ok = source["ok"];
+	        this.failed = source["failed"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class LogCollectTask {
+	    hostId: string;
+	    req: monitor.LogRequest;
+	
+	    static createFrom(source: any = {}) {
+	        return new LogCollectTask(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hostId = source["hostId"];
+	        this.req = this.convertValues(source["req"], monitor.LogRequest);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class LogHostInfo {
 	    id: string;
 	    name: string;
@@ -529,6 +629,380 @@ export namespace monitor {
 	        this.nets = this.convertValues(source["nets"], NetStat);
 	        this.disks = this.convertValues(source["disks"], DiskStat);
 	        this.procs = this.convertValues(source["procs"], Proc);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class LogModuleDef {
+	    name: string;
+	    paths?: string[];
+	    match?: string;
+	    recursive?: boolean;
+	    exclude?: string[];
+	    needsRoot?: boolean;
+	    cmd?: string;
+	    outFile?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LogModuleDef(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.paths = source["paths"];
+	        this.match = source["match"];
+	        this.recursive = source["recursive"];
+	        this.exclude = source["exclude"];
+	        this.needsRoot = source["needsRoot"];
+	        this.cmd = source["cmd"];
+	        this.outFile = source["outFile"];
+	    }
+	}
+	export class LogCategoryDef {
+	    key: string;
+	    label: string;
+	    discoverGlobs?: string[];
+	    modules?: LogModuleDef[];
+	
+	    static createFrom(source: any = {}) {
+	        return new LogCategoryDef(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.label = source["label"];
+	        this.discoverGlobs = source["discoverGlobs"];
+	        this.modules = this.convertValues(source["modules"], LogModuleDef);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class LogCatalog {
+	    version: number;
+	    categories: LogCategoryDef[];
+	
+	    static createFrom(source: any = {}) {
+	        return new LogCatalog(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.version = source["version"];
+	        this.categories = this.convertValues(source["categories"], LogCategoryDef);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class LogEntry {
+	    hostId: string;
+	    category: string;
+	    module: string;
+	    source: string;
+	    rel: string;
+	    sizeBytes: number;
+	    mtimeMs: number;
+	    cut: boolean;
+	    cutFrom?: string;
+	    cutTo?: string;
+	    firstMs?: number;
+	    lastMs?: number;
+	    skipped?: string;
+	    isCmd?: boolean;
+	    dupOf?: string;
+	    action?: string;
+	    note?: string;
+	    arch?: string;
+	    archWhole?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LogEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hostId = source["hostId"];
+	        this.category = source["category"];
+	        this.module = source["module"];
+	        this.source = source["source"];
+	        this.rel = source["rel"];
+	        this.sizeBytes = source["sizeBytes"];
+	        this.mtimeMs = source["mtimeMs"];
+	        this.cut = source["cut"];
+	        this.cutFrom = source["cutFrom"];
+	        this.cutTo = source["cutTo"];
+	        this.firstMs = source["firstMs"];
+	        this.lastMs = source["lastMs"];
+	        this.skipped = source["skipped"];
+	        this.isCmd = source["isCmd"];
+	        this.dupOf = source["dupOf"];
+	        this.action = source["action"];
+	        this.note = source["note"];
+	        this.arch = source["arch"];
+	        this.archWhole = source["archWhole"];
+	    }
+	}
+	export class LogLeftover {
+	    hostId: string;
+	    id: string;
+	    path: string;
+	    kind: string;
+	    bytes: number;
+	    mtimeMs: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LogLeftover(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hostId = source["hostId"];
+	        this.id = source["id"];
+	        this.path = source["path"];
+	        this.kind = source["kind"];
+	        this.bytes = source["bytes"];
+	        this.mtimeMs = source["mtimeMs"];
+	    }
+	}
+	
+	export class LogModuleStat {
+	    category: string;
+	    module: string;
+	    dir: string;
+	    realDir: string;
+	    status: string;
+	    files: number;
+	    bytes: number;
+	    oldestMs: number;
+	    newestMs: number;
+	    needsRoot: boolean;
+	    isCmd: boolean;
+	    recursive: boolean;
+	    match?: string;
+	    dupOfDir?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LogModuleStat(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.category = source["category"];
+	        this.module = source["module"];
+	        this.dir = source["dir"];
+	        this.realDir = source["realDir"];
+	        this.status = source["status"];
+	        this.files = source["files"];
+	        this.bytes = source["bytes"];
+	        this.oldestMs = source["oldestMs"];
+	        this.newestMs = source["newestMs"];
+	        this.needsRoot = source["needsRoot"];
+	        this.isCmd = source["isCmd"];
+	        this.recursive = source["recursive"];
+	        this.match = source["match"];
+	        this.dupOfDir = source["dupOfDir"];
+	    }
+	}
+	export class LogPick {
+	    category: string;
+	    module: string;
+	    dir: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LogPick(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.category = source["category"];
+	        this.module = source["module"];
+	        this.dir = source["dir"];
+	    }
+	}
+	export class LogPlan {
+	    hostId: string;
+	    hostname: string;
+	    serverDir: string;
+	    entries: LogEntry[];
+	    files: number;
+	    totalBytes: number;
+	    estArchive: number;
+	    needBytes: number;
+	    freeBytes: number;
+	    target: string;
+	    targets: RecTarget[];
+	    ok: boolean;
+	    reason: string;
+	    elevated: boolean;
+	    fromMs: number;
+	    toMs: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LogPlan(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hostId = source["hostId"];
+	        this.hostname = source["hostname"];
+	        this.serverDir = source["serverDir"];
+	        this.entries = this.convertValues(source["entries"], LogEntry);
+	        this.files = source["files"];
+	        this.totalBytes = source["totalBytes"];
+	        this.estArchive = source["estArchive"];
+	        this.needBytes = source["needBytes"];
+	        this.freeBytes = source["freeBytes"];
+	        this.target = source["target"];
+	        this.targets = this.convertValues(source["targets"], RecTarget);
+	        this.ok = source["ok"];
+	        this.reason = source["reason"];
+	        this.elevated = source["elevated"];
+	        this.fromMs = source["fromMs"];
+	        this.toMs = source["toMs"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class LogRequest {
+	    picks: LogPick[];
+	    fromMs: number;
+	    toMs: number;
+	    recentDays: number;
+	    target: string;
+	    serverDir: string;
+	    hostName: string;
+	    addr: string;
+	    tz: string;
+	    journalUnits: string[];
+	    journalMaxBytes: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LogRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.picks = this.convertValues(source["picks"], LogPick);
+	        this.fromMs = source["fromMs"];
+	        this.toMs = source["toMs"];
+	        this.recentDays = source["recentDays"];
+	        this.target = source["target"];
+	        this.serverDir = source["serverDir"];
+	        this.hostName = source["hostName"];
+	        this.addr = source["addr"];
+	        this.tz = source["tz"];
+	        this.journalUnits = source["journalUnits"];
+	        this.journalMaxBytes = source["journalMaxBytes"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class LogSurvey {
+	    hostId: string;
+	    hostName: string;
+	    hostname: string;
+	    dirName: string;
+	    elevated: boolean;
+	    modules: LogModuleStat[];
+	    targets: RecTarget[];
+	    err?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LogSurvey(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hostId = source["hostId"];
+	        this.hostName = source["hostName"];
+	        this.hostname = source["hostname"];
+	        this.dirName = source["dirName"];
+	        this.elevated = source["elevated"];
+	        this.modules = this.convertValues(source["modules"], LogModuleStat);
+	        this.targets = this.convertValues(source["targets"], RecTarget);
+	        this.err = source["err"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

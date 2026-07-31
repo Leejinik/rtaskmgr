@@ -10,8 +10,16 @@ export function AutoUpdate() {
   return window['go']['main']['App']['AutoUpdate']();
 }
 
+export function BundleLogCollect(arg1) {
+  return window['go']['main']['App']['BundleLogCollect'](arg1);
+}
+
 export function CancelCaptureDownload(arg1, arg2) {
   return window['go']['main']['App']['CancelCaptureDownload'](arg1, arg2);
+}
+
+export function CancelLogCollect() {
+  return window['go']['main']['App']['CancelLogCollect']();
 }
 
 export function CaptureEnv(arg1) {
@@ -34,6 +42,14 @@ export function ChooseCaptureSavePath(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['ChooseCaptureSavePath'](arg1, arg2, arg3, arg4);
 }
 
+export function ChooseLogCollectFolder() {
+  return window['go']['main']['App']['ChooseLogCollectFolder']();
+}
+
+export function CollectLogs(arg1, arg2) {
+  return window['go']['main']['App']['CollectLogs'](arg1, arg2);
+}
+
 export function Connect(arg1, arg2) {
   return window['go']['main']['App']['Connect'](arg1, arg2);
 }
@@ -48,6 +64,10 @@ export function DeleteCapture(arg1, arg2) {
 
 export function DeleteHost(arg1) {
   return window['go']['main']['App']['DeleteHost'](arg1);
+}
+
+export function DeleteLogCollectLeftover(arg1, arg2) {
+  return window['go']['main']['App']['DeleteLogCollectLeftover'](arg1, arg2);
 }
 
 export function DeleteScheduled(arg1, arg2) {
@@ -122,6 +142,22 @@ export function LocalOperator() {
   return window['go']['main']['App']['LocalOperator']();
 }
 
+export function LogCollectCatalog() {
+  return window['go']['main']['App']['LogCollectCatalog']();
+}
+
+export function LogCollectLeftovers(arg1) {
+  return window['go']['main']['App']['LogCollectLeftovers'](arg1);
+}
+
+export function LogCollectPlan(arg1, arg2) {
+  return window['go']['main']['App']['LogCollectPlan'](arg1, arg2);
+}
+
+export function LogCollectSurvey(arg1, arg2) {
+  return window['go']['main']['App']['LogCollectSurvey'](arg1, arg2);
+}
+
 export function LogFrameAt(arg1, arg2) {
   return window['go']['main']['App']['LogFrameAt'](arg1, arg2);
 }
@@ -158,6 +194,10 @@ export function OpenInWireshark(arg1, arg2) {
   return window['go']['main']['App']['OpenInWireshark'](arg1, arg2);
 }
 
+export function OpenLogCollectFolder(arg1) {
+  return window['go']['main']['App']['OpenLogCollectFolder'](arg1);
+}
+
 export function OpenLogDialog() {
   return window['go']['main']['App']['OpenLogDialog']();
 }
@@ -186,12 +226,20 @@ export function RenewPasswords(arg1) {
   return window['go']['main']['App']['RenewPasswords'](arg1);
 }
 
+export function ResetLogCollectCatalog() {
+  return window['go']['main']['App']['ResetLogCollectCatalog']();
+}
+
 export function SaveHost(arg1) {
   return window['go']['main']['App']['SaveHost'](arg1);
 }
 
 export function SaveHosts(arg1) {
   return window['go']['main']['App']['SaveHosts'](arg1);
+}
+
+export function SaveLogCollectCatalog(arg1) {
+  return window['go']['main']['App']['SaveLogCollectCatalog'](arg1);
 }
 
 export function ServiceAction(arg1, arg2, arg3) {

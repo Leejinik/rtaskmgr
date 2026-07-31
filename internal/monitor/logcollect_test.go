@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"path"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -112,23 +113,26 @@ func TestServerDirNamesFallbacks(t *testing.T) {
 func TestArchivePathFor(t *testing.T) {
 	cases := []struct {
 		server, cat, mod, rel string
-		cut                   bool
-		from                  string
+		mark                  string
 		want                  string
 	}{
-		{"trunk-1", LogCatModules, "lizcollector", "collector.log", false, "",
+		{"trunk-1", LogCatModules, "lizcollector", "collector.log", "",
 			"trunk-1/modules/lizcollector/collector.log"},
-		{"trunk-1", LogCatModules, "lift-packet", "packet/2026-07/onion-2026-07-28_1.log.gz", false, "",
+		{"trunk-1", LogCatModules, "lift-packet", "packet/2026-07/onion-2026-07-28_1.log.gz", "",
 			"trunk-1/modules/lift-packet/packet/2026-07/onion-2026-07-28_1.log.gz"},
-		{"trunk-1", LogCatMiddleware, "kafka", "server.log", false, "",
+		{"trunk-1", LogCatMiddleware, "kafka", "server.log", "",
 			"trunk-1/middleware/kafka/server.log"},
-		{"trunk-1", LogCatSystem, "var-log", "messages-20260705", true, "20260630",
+		{"trunk-1", LogCatSystem, "var-log", "messages-20260705", "from-20260630",
 			"trunk-1/system/var-log/messages-20260705.from-20260630"},
-		{"trunk-1", LogCatJournal, "journal", "journal.log", false, "",
+		// A window with both ends inside the file carries both bounds, so the name can
+		// never be read as "everything after 06-30".
+		{"trunk-1", LogCatSystem, "var-log", "messages", "from-20260630-to-20260705",
+			"trunk-1/system/var-log/messages.from-20260630-to-20260705"},
+		{"trunk-1", LogCatJournal, "journal", "journal.log", "",
 			"trunk-1/journal/journal/journal.log"},
 	}
 	for _, c := range cases {
-		got, err := archivePathFor(c.server, c.cat, c.mod, c.rel, c.cut, c.from)
+		got, err := archivePathFor(c.server, c.cat, c.mod, c.rel, c.mark)
 		if err != nil {
 			t.Errorf("archivePathFor(%q,%q,%q,%q): %v", c.server, c.cat, c.mod, c.rel, err)
 			continue
@@ -153,7 +157,7 @@ func TestArchivePathForRefusesEscapes(t *testing.T) {
 		{"..", "x.log"},
 	}
 	for _, c := range bad {
-		got, err := archivePathFor("srv", LogCatSystem, c.mod, c.rel, false, "")
+		got, err := archivePathFor("srv", LogCatSystem, c.mod, c.rel, "")
 		if err == nil && (strings.Contains(got, "..") || !strings.HasPrefix(got, "srv/")) {
 			t.Errorf("archivePathFor(mod=%q rel=%q) = %q escaped", c.mod, c.rel, got)
 		}
@@ -164,9 +168,13 @@ func TestArchivePathForRefusesEscapes(t *testing.T) {
 			}
 		}
 	}
-	// A cut file with no reference date must be refused rather than named ".from-".
-	if _, err := archivePathFor("srv", LogCatSystem, "m", "messages", true, ""); err == nil {
-		t.Error("a cut entry with no date was accepted")
+	// A marker that sanitises away must be refused rather than producing a bare ".".
+	if _, err := archivePathFor("srv", LogCatSystem, "m", "messages", "///"); err == nil {
+		t.Error("a cut entry with no usable marker was accepted")
+	}
+	// And an entry that was never trimmed must not be able to produce a marker at all.
+	if mark := (LogEntry{Cut: false, CutFrom: "20260630"}).cutMark(); mark != "" {
+		t.Errorf("an untrimmed entry produced the marker %q", mark)
 	}
 }
 
@@ -303,24 +311,37 @@ func TestClampLogRange(t *testing.T) {
 
 func TestJournalCmd(t *testing.T) {
 	from := time.Date(2026, 6, 30, 0, 0, 0, 0, time.Local).UnixMilli()
-	cmd, err := journalCmd(from, 0, []string{"lizcollector.service", "kafka.service"}, 512<<20)
+	cmd, err := journalCmd(from, 0, []string{"lizcollector.service", "kafka.service"})
 	if err != nil {
 		t.Fatalf("journalCmd: %v", err)
 	}
-	for _, want := range []string{"journalctl", "--no-pager", "--since", "-u 'lizcollector.service'", "head -c"} {
+	for _, want := range []string{"journalctl", "--no-pager", "--since", "-u 'lizcollector.service'"} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("journalCmd missing %q: %s", want, cmd)
 		}
 	}
+	// The window is an absolute instant. A wall-clock string would be read by
+	// journald in the HOST's zone while Go rendered it in the client's, so a KST
+	// operator against a UTC host would silently ask for a different nine hours.
+	if !strings.Contains(cmd, "'@"+strconv.FormatInt(from/1000, 10)+"'") {
+		t.Errorf("journalCmd must pass an absolute instant: %s", cmd)
+	}
+	// It must NOT bound its own output. `| head -c N` makes the pipeline's exit
+	// status head's — always 0 — so a journalctl that failed and a journal cut off at
+	// the cap both came back as a clean success. The copy script applies the bound
+	// and can tell those apart.
+	if strings.Contains(cmd, "head -c") || strings.Contains(cmd, "|") {
+		t.Errorf("journalCmd must not pipe: %s", cmd)
+	}
 	// A unit name is a host-adjacent string that ends up in a command; it must be
 	// validated, not quoted-and-hoped.
 	for _, bad := range []string{"kafka.service;id", "$(reboot)", "a b", "x`id`"} {
-		if _, err := journalCmd(from, 0, []string{bad}, 0); err == nil {
+		if _, err := journalCmd(from, 0, []string{bad}); err == nil {
 			t.Errorf("journalCmd accepted unit %q", bad)
 		}
 	}
 	// Empty entries are skipped rather than becoming "-u ''".
-	cmd, err = journalCmd(0, 0, []string{"", "kafka.service", "  "}, 0)
+	cmd, err = journalCmd(0, 0, []string{"", "kafka.service", "  "})
 	if err != nil {
 		t.Fatalf("journalCmd with blanks: %v", err)
 	}

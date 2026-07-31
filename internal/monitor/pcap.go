@@ -38,7 +38,6 @@ package monitor
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/rand"
 	_ "embed"
@@ -46,10 +45,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -1865,175 +1861,16 @@ func (m *Manager) DownloadCaptureTo(ctx context.Context, hostID, id, localPath s
 	if err != nil {
 		return 0, err
 	}
-	q := shellQuote(file)
-
-	// One probe round trip: the size (which also fixes the progress denominator)
-	// plus whether gzip/ionice exist on this host.
-	out, _ := m.plainRun(s, `set -u; f=`+q+`; sz=$(stat -c%s "$f" 2>/dev/null || echo -1); `+
-		`g=0; command -v gzip >/dev/null 2>&1 && g=1; `+
-		`i=0; command -v ionice >/dev/null 2>&1 && i=1; echo "SZ|$sz|$g|$i"`)
-	total, useGzip, useIonice := int64(-1), false, false
-	for _, line := range strings.Split(out, "\n") {
-		if !strings.HasPrefix(line, "SZ|") {
-			continue
-		}
-		p := strings.Split(strings.TrimSpace(line[3:]), "|")
-		if len(p) != 3 {
-			continue
-		}
-		total, _ = strconv.ParseInt(p[0], 10, 64)
-		useGzip, useIonice = p[1] == "1", p[2] == "1"
-	}
-	if total < 0 {
+	info, ierr := m.statRemoteFile(s, file)
+	if ierr != nil || info.Size < 0 {
 		return 0, fmt.Errorf("캡쳐 파일을 읽을 수 없습니다: %s", file)
 	}
-	if total == 0 {
+	if info.Size == 0 {
 		return 0, fmt.Errorf("캡쳐 파일이 비어 있습니다 (아직 패킷이 없거나 시작에 실패했습니다)")
 	}
-	if err := ensureLocalRoom(localPath, total); err != nil {
-		return 0, err
-	}
-
-	// head -c <total> pins the denominator: without it a still-running capture
-	// grows while we read and the progress bar sails past 100%.
-	// nice/ionice keep us off the CPU and disk of a host that is already sick.
-	pre := "nice -n 19 "
-	if useIonice {
-		pre += "ionice -c3 "
-	}
-	remote := `set -u; f=` + q + `; ` + pre + `head -c ` + strconv.FormatInt(total, 10) + ` -- "$f"`
-	if useGzip {
-		remote += ` | nice -n 19 gzip -1 -c`
-	}
-
-	dctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	sess, err := s.client.NewSession()
-	if err != nil {
-		return 0, err
-	}
-	defer sess.Close()
-	stdout, err := sess.StdoutPipe()
-	if err != nil {
-		return 0, err
-	}
-	// Stderr MUST be separate: one shell warning ahead of the gzip header would
-	// corrupt the whole file (this is why CombinedOutput is banned here).
-	var errBuf bytes.Buffer
-	sess.Stderr = &errBuf
-	if err := sess.Start("bash -c " + shellQuote(remote)); err != nil {
-		return 0, err
-	}
-
-	// Closing the session is what actually unblocks a stalled Read; the remote
-	// gzip then dies on SIGPIPE at its next write.
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-dctx.Done():
-			sess.Close()
-		case <-done:
-		}
-	}()
-	defer close(done)
-
-	tmp, err := os.CreateTemp(filepath.Dir(localPath), ".rtm-dl-*")
-	if err != nil {
-		return 0, fmt.Errorf("임시 파일 생성 실패: %w", err)
-	}
-	tmpName := tmp.Name()
-	cleanup := func() {
-		tmp.Close()
-		os.Remove(tmpName)
-	}
-
-	pw := &progressWriter{total: total, fn: progress}
-	pw.mark()
-	// Stall watchdog: give up on a connection that has gone quiet rather than
-	// hanging the download forever. `stalled` records that WE gave up, so a local
-	// write failure is never misreported as a dead connection.
-	var stalled atomic.Bool
-	go func() {
-		t := time.NewTicker(5 * time.Second)
-		defer t.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-t.C:
-				if time.Since(time.Unix(0, pw.lastAt.Load())) > dlStallSeconds*time.Second {
-					stalled.Store(true)
-					cancel()
-					return
-				}
-			}
-		}
-	}()
-
-	var src io.Reader = stdout
-	if useGzip {
-		// gzip's trailer (CRC32 + length) is verified at EOF, so end-to-end
-		// integrity comes free — no second full read for a sha256.
-		gzr, gerr := gzip.NewReader(stdout)
-		if gerr != nil {
-			cleanup()
-			return 0, fmt.Errorf("전송 스트림을 열 수 없습니다: %v (%s)", gerr, tailLines(errBuf.String(), 2))
-		}
-		defer gzr.Close()
-		src = gzr
-	}
-	buf := make([]byte, 1<<20)
-	n, cerr := io.CopyBuffer(io.MultiWriter(tmp, pw), src, buf)
-	// The copy error MUST be handled before Wait(). io.MultiWriter writes the temp
-	// file first, so a local failure (disk full, an EDR agent locking the temp file)
-	// returns with the remote `head | gzip` still streaming and nobody draining
-	// stdout — the SSH channel window fills and Wait() blocks until the stall
-	// watchdog fires a minute later, at which point the real cause has been
-	// replaced by "the connection stopped responding". Closing the session first
-	// makes Wait() return immediately and keeps the true error.
-	if cerr != nil {
-		cancel()
-		_ = sess.Wait()
-		cleanup()
-		switch {
-		case ctx.Err() != nil:
-			return n, fmt.Errorf("다운로드가 취소되었습니다")
-		case stalled.Load():
-			return n, fmt.Errorf("다운로드가 응답하지 않습니다 (%d초간 진행 없음)", dlStallSeconds)
-		}
-		return n, fmt.Errorf("다운로드 실패: %v (%s)", cerr, tailLines(errBuf.String(), 2))
-	}
-	werr := sess.Wait()
-	if werr != nil && n < total {
-		cleanup()
-		return n, fmt.Errorf("다운로드가 중간에 끊겼습니다: %v (%s)", werr, tailLines(errBuf.String(), 2))
-	}
-	if n != total {
-		cleanup()
-		return n, fmt.Errorf("전송 크기가 맞지 않습니다 (%d / %d 바이트)", n, total)
-	}
-	if err := tmp.Sync(); err != nil {
-		cleanup()
-		return n, fmt.Errorf("파일 기록 실패: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return n, fmt.Errorf("파일 닫기 실패: %w", err)
-	}
-	if err := os.Rename(tmpName, localPath); err != nil {
-		os.Remove(tmpName)
-		return n, fmt.Errorf("저장 실패: %w", err)
-	}
-	// Re-stat after the rename: a security agent that quarantines the file leaves
-	// the rename looking successful (this app has been bitten by exactly that).
-	if fi, serr := os.Stat(localPath); serr != nil || fi.Size() != total {
-		return n, fmt.Errorf("저장된 파일을 확인할 수 없습니다 — 보안 소프트웨어가 파일을 격리했을 수 있습니다: %s", localPath)
-	}
-	if progress != nil {
-		progress(n, total)
-	}
-	return n, nil
+	// gzip on the wire earns its CPU here: a pcap is mostly repetitive headers, and
+	// its trailer then verifies the transfer end to end for free.
+	return m.streamRemoteFile(ctx, s, file, localPath, info, info.HaveGzip, progress)
 }
 
 // CaptureSHA256 hashes a capture on the host, on demand only. The routine
