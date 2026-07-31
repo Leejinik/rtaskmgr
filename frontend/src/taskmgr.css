@@ -1294,3 +1294,256 @@ body.col-resizing * {
   opacity: 0.4;
   cursor: default;
 }
+
+/* ---- 로그 수집 (클러스터 뷰 세 번째 모드) ----
+   화면 전체를 세로로 나눠 트리는 스크롤하고 하단 요약은 고정한다: 선택을 바꿀
+   때마다 "얼마나 되고 어디에 담기며 들어가긴 하는가"가 항상 보여야 하기 때문이다. */
+.lc-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  overflow: hidden;
+}
+.lc-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+.lc-bar input[type="date"],
+.lc-bar input[type="number"] {
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  outline: none;
+}
+.lc-check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.lc-err {
+  flex: 0 0 auto;
+  color: var(--bad);
+  font-size: 12px;
+  border: 1px solid var(--bad);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+.lc-warn {
+  flex: 0 0 auto;
+  color: var(--warn);
+  font-size: 12px;
+  border: 1px solid var(--warn);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+.lc-dim {
+  color: var(--text-mute);
+  font-size: 12px;
+}
+.lc-bad { color: var(--bad); }
+.lc-mono {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  user-select: text;
+}
+
+.lc-tree {
+  flex: 1 1 auto;
+  /* A floor, not 0: with the leftovers panel and a result block both showing at the
+     900x560 minimum window the tree would otherwise be squeezed out of existence and
+     the selection would be unreachable with no scrollbar anywhere. */
+  min-height: 120px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px;
+}
+.lc-cat { margin-bottom: 6px; }
+.lc-cat-head,
+.lc-host-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  font-size: 12px;
+}
+.lc-cat-head { background: var(--bg-header); border-radius: 4px; font-weight: 600; }
+.lc-host-head { margin-left: 14px; }
+.lc-cat-name { font-size: 13px; }
+.lc-host-name { font-weight: 600; }
+.lc-twisty {
+  background: none;
+  border: none;
+  color: var(--text-mute);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 1;
+}
+.lc-twisty:hover { color: var(--text); }
+.lc-stage {
+  font-size: 11px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+/* Must come after .lc-stage: both are single-class selectors, so source order is
+   what decides, and a failure rendered in the progress colour is invisible. */
+.lc-stage.lc-bad,
+.lc-bad .lc-stage {
+  color: var(--bad);
+}
+
+.lc-mods {
+  margin-left: 34px;
+  display: flex;
+  flex-direction: column;
+}
+.lc-mod {
+  display: grid;
+  grid-template-columns: 16px 170px 1fr 90px 54px;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  font-size: 12px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.lc-mod:hover { background: var(--bg-row-hover); }
+.lc-mod.lc-off { opacity: 0.45; cursor: default; }
+.lc-mod-name { display: flex; align-items: center; gap: 4px; }
+.lc-mod-dir {
+  color: var(--text-mute);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lc-mod-size { text-align: right; }
+.lc-mod-files { text-align: right; color: var(--text-mute); }
+.lc-root { font-size: 10px; }
+
+/* 서버에 남은 수집물. 눈에 띄는 자리에 둔다 — 이 기능이 디스크를 잠식하는
+   주된 시나리오이고, 찾아보지 않으면 보이지 않는 곳에 쌓인다. */
+.lc-left {
+  flex: 0 1 auto;
+  min-height: 0;
+  border: 1px solid var(--warn);
+  border-radius: 6px;
+  padding: 6px 8px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+.lc-left-head {
+  font-size: 12px;
+  color: var(--warn);
+  margin-bottom: 4px;
+}
+.lc-left-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 2px 0;
+}
+
+.lc-foot {
+  /* Shrinkable with its own scroll: when the window is short the footer gives way
+     rather than pushing its own tail past the clipped edge of .lc-wrap. */
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lc-foot-total { font-size: 13px; }
+.lc-foot-servers {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.lc-srv {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.lc-srv-name { font-weight: 600; min-width: 110px; }
+.lc-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.lc-result {
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.lc-result-row { display: flex; gap: 8px; align-items: center; }
+
+/* 실행 중 진행 요약. 트리 안에만 두면 카테고리를 접어둔 채 시작했을 때(접힘은
+   localStorage 에 남는다) 몇 분 동안 진행이 화면 어디에도 보이지 않는다. */
+.lc-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 4px;
+  border-bottom: 1px dashed var(--border);
+  margin-bottom: 4px;
+}
+.lc-prog-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.lc-progbar {
+  flex: 1;
+  max-width: 220px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-header);
+  overflow: hidden;
+}
+.lc-progbar > i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms linear;
+}
+/* 압축·검증·정리는 남은 양을 알 수 없다. 0%에 멈춘 막대는 "죽었다"로 읽히므로
+   진행 중이라는 사실만 정직하게 표시한다. */
+.lc-progbar.indet > i {
+  width: 35%;
+  transition: none;
+  animation: lc-indet 1.1s ease-in-out infinite;
+}
+@keyframes lc-indet {
+  0%   { margin-left: -35%; }
+  100% { margin-left: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lc-progbar.indet > i { animation: none; width: 100%; opacity: 0.45; }
+}

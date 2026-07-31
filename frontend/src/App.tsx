@@ -12,6 +12,8 @@ import {
   AutoUpdate, ApplyUpdate, GetPendingReleaseNotes, MarkReleaseNotesSeen,
   ShowUpdateModeNoticeOnce,
   ChooseCaptureSavePath, DownloadCapture, CancelCaptureDownload,
+  ChooseLogCollectFolder, CollectLogs, CancelLogCollect,
+  OpenLogCollectFolder, BundleLogCollect, RedownloadLogCollect,
 } from "../wailsjs/go/main/App";
 
 const REFRESH_OPTS = [1, 2, 3, 5, 10, 15, 20, 30, 60];
@@ -24,6 +26,7 @@ import ConnectDialog from "./components/ConnectDialog";
 import ClusterDialog from "./components/ClusterDialog";
 import ClusterPasswordDialog from "./components/ClusterPasswordDialog";
 import ClusterOverview from "./components/ClusterOverview";
+import { LogCollectProgress, LogCollectTaskReq } from "./components/LogCollectView";
 import ContextMenu from "./components/ContextMenu";
 import ConfirmDialog from "./components/ConfirmDialog";
 import PlaybackBar from "./components/PlaybackBar";
@@ -121,6 +124,12 @@ export default function App() {
   // 8GB transfer keeps reporting while the operator closes the dialog and goes
   // back to monitoring.
   const [pcapDl, setPcapDl] = useState<{ hostId: string; id: string; copied: number; total: number; pct: number } | null>(null);
+  // Bulk log collection. The run outlives the view: several servers copying,
+  // compressing and transferring gigabytes takes minutes, and the operator has to
+  // be able to switch back to the process list while it happens.
+  const [lcRunning, setLcRunning] = useState(false);
+  const [lcProgress, setLcProgress] = useState<Record<string, LogCollectProgress>>({});
+  const [lcResult, setLcResult] = useState<main.LogCollectResult | null>(null);
   // Managed-account (liz/root) password expiry, keyed by host id. Seeded from the
   // persisted host cache and refreshed live via the "pwstatus" event on connect.
   const [pwStatus, setPwStatus] = useState<Record<string, PwInfo>>({});
@@ -334,7 +343,19 @@ export default function App() {
         total: s.total ?? 0, pct: s.pct ?? 0,
       });
     });
-    return () => { offFrame(); offStatus(); offNet(); offPw(); offRec(); offCap(); offDl(); };
+    // Per-server collection progress. Keyed by host so several servers can be in
+    // different stages at once — which they will be, since they run concurrently.
+    const offLc = EventsOn("logCollect", (s: any) => {
+      if (!s?.hostId) return;
+      setLcProgress((prev) => ({
+        ...prev,
+        [s.hostId]: {
+          stage: s.stage || "", done: s.done ?? 0, total: s.total ?? 0,
+          pct: s.pct ?? 0, err: s.err || "",
+        },
+      }));
+    });
+    return () => { offFrame(); offStatus(); offNet(); offPw(); offRec(); offCap(); offDl(); offLc(); };
   }, []);
 
   // Raise the expiry alert for the first urgent, not-yet-dismissed host. One at a
@@ -349,6 +370,70 @@ export default function App() {
       }
     }
   }, [pwStatus, hosts, pwWarnDays, pwDismissed, pwAlert]);
+
+  // ---- 로그 수집 ----------------------------------------------------------
+  // The folder is asked for first, as its own step: bundled into the collection the
+  // UI would sit at "0%" for as long as the operator takes to browse.
+  async function startLogCollect(tasks: LogCollectTaskReq[]) {
+    if (tasks.length === 0 || lcRunning) return;
+    let dir = "";
+    try { dir = await ChooseLogCollectFolder(); } catch { return; }
+    if (!dir) return;
+    setLcProgress({});
+    setLcResult(null);
+    setLcRunning(true);
+    try {
+      const res = await CollectLogs(
+        tasks.map((t) => ({
+          hostId: t.hostId,
+          req: {
+            picks: t.picks, fromMs: t.fromMs, toMs: t.toMs, recentDays: t.recentDays,
+            target: t.target, serverDir: t.serverDir, hostName: "", addr: "", tz: "",
+            journalUnits: t.journalUnits, journalMaxBytes: 0,
+          },
+        })) as any,
+        dir
+      );
+      setLcResult(res);
+      const failed = res?.failed ?? 0;
+      showToast(failed > 0
+        ? `로그 수집 — 성공 ${res.ok}대, 실패 ${failed}대 (${res.dir})`
+        : `로그 수집 완료 — ${res.ok}대 (${res.dir})`);
+    } catch (e: any) {
+      showToast(`로그 수집 실패 — ${String(e?.message ?? e)}`);
+    } finally {
+      setLcRunning(false);
+    }
+  }
+
+  // Re-fetch an archive a previous run left on a host. The folder is asked for
+  // separately, as with a fresh collection.
+  async function redownloadLogCollect(hostId: string, path: string) {
+    if (lcRunning) return;
+    let dir = "";
+    try { dir = await ChooseLogCollectFolder(); } catch { return; }
+    if (!dir) return;
+    setLcRunning(true);
+    try {
+      const r = await RedownloadLogCollect(hostId, path, dir);
+      showToast(r.cleaned
+        ? `다시 내려받았습니다 — ${r.files}개 (${r.path}) · 서버 정리 완료`
+        : `다시 내려받았습니다 — ${r.path} (서버에 아직 남아 있습니다)`);
+    } catch (e: any) {
+      showToast(`다시 내려받기 실패 — ${String(e?.message ?? e)}`);
+    } finally {
+      setLcRunning(false);
+    }
+  }
+
+  async function bundleLogCollect() {
+    if (!lcResult?.dir) return;
+    try {
+      showToast(`하나로 묶는 중… — ${await BundleLogCollect(lcResult.dir)}`);
+    } catch (e: any) {
+      showToast(`묶기 실패 — ${String(e?.message ?? e)}`);
+    }
+  }
 
   const dismissPw = (hostId: string) =>
     setPwDismissed((prev) => { const n = new Set(prev); n.add(hostId); return n; });
@@ -954,6 +1039,18 @@ export default function App() {
           capturing={Object.fromEntries(
             Object.entries(capState).map(([id, s]) => [id, (s?.running ?? 0) > 0])
           )}
+          clusterId={overviewCluster.id}
+          logCollect={{
+            running: lcRunning,
+            progress: lcProgress,
+            result: lcResult,
+            onStart: startLogCollect,
+            onCancel: () => { CancelLogCollect(); showToast("로그 다운로드를 취소했습니다 (서버의 아카이브는 남습니다)"); },
+            onOpenFolder: () => { if (lcResult?.dir) OpenLogCollectFolder(lcResult.dir); },
+            onBundle: bundleLogCollect,
+            onClearResult: () => { setLcResult(null); setLcProgress({}); },
+            onRedownload: redownloadLogCollect,
+          }}
         />
       ) : (
       <main className="main">

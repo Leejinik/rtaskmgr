@@ -7,6 +7,12 @@ package monitor
 // feature can least afford, so each one is pinned.
 
 import (
+	"archive/tar"
+	"compress/gzip"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -91,6 +97,74 @@ func TestPrevRotationIsALowerBound(t *testing.T) {
 	if !collected {
 		t.Fatalf("the file holding 07-04 must be collected for a window ending 07-04 12:00: %+v", got)
 	}
+}
+
+// An active log whose content is entirely inside the window was NOT cut, so it must
+// not be named as if it were.
+//
+// Found on a real collection: every never-rotated log came back as
+// "lizstats.log.from-20260724" even though the file only held that day's entries.
+// T1 is right to filter them — a filename with no date says nothing about where the
+// content starts, so the file has to be read — but running the filter is not the same
+// as cutting something. The marker sends the reader looking for a week of entries
+// that never existed, and it appears on nearly every active log at once, which is
+// exactly the set an operator reaches for first.
+func TestUncutFilesLoseTheirCutMarker(t *testing.T) {
+	// The three shapes seen in one real archive.
+	const from = "20260724"
+	cases := []struct {
+		name      string
+		st        LogFilterStats
+		wantCut   bool
+		wantAct   string
+		wantNote  string
+		wantIsCut bool
+	}{
+		// lizstats.log — only today's entries; the filter kept every line.
+		{"today-only", LogFilterStats{Found: true, Lines: 900, Dated: 880, Emitted: 900}, false, LogTakeUncut, "버려진 줄 없음", false},
+		// /var/log/messages — starts inside the window; nothing before it existed.
+		{"starts-in-window", LogFilterStats{Found: true, Lines: 4000, Dated: 4000, Emitted: 4000}, false, LogTakeUncut, "버려진 줄 없음", false},
+		// redis.log — genuinely spans back to January; the filter dropped most of it.
+		{"really-cut", LogFilterStats{Found: true, Lines: 50000, Dated: 49000, Emitted: 1200}, true, LogTakeFiltered, "", true},
+		// A file whose head was dropped for the buffer limit IS cut, even if the rest
+		// was all emitted.
+		{"pretrunc", LogFilterStats{Found: true, Lines: 900, Dated: 880, Emitted: 900, PreTrunc: 12}, true, LogTakeFiltered, "버퍼 한도", true},
+	}
+	for _, c := range cases {
+		entries := assignArchivePaths("srv", []LogEntry{{
+			Category: LogCatModules, Module: "lizstats", Rel: "lizstats.log",
+			Source: "/usr/local/liz/lizstats/logs/lizstats.log",
+			Action: LogT1Filter, Cut: true, CutFrom: from,
+		}})
+		if !strings.HasSuffix(entries[0].Arch, ".from-"+from) {
+			t.Fatalf("%s: the plan must start from the marked name, got %q", c.name, entries[0].Arch)
+		}
+		keep := filterActionFor(0, c.st)
+		got := applyCopyResults(entries, map[int]logCopyResult{
+			0: {Idx: 0, Keep: keep, RC: 0, Note: statLine(c.st)},
+		})[0]
+
+		if got.Cut != c.wantIsCut {
+			t.Errorf("%s: Cut = %v, want %v", c.name, got.Cut, c.wantIsCut)
+		}
+		if got.Action != c.wantAct {
+			t.Errorf("%s: Action = %q, want %q", c.name, got.Action, c.wantAct)
+		}
+		marked := strings.Contains(got.Arch, ".from-")
+		if marked != c.wantCut {
+			t.Errorf("%s: archive path %q — marked=%v, want %v", c.name, got.Arch, marked, c.wantCut)
+		}
+		if c.wantNote != "" && !strings.Contains(got.Note, c.wantNote) {
+			t.Errorf("%s: note %q must mention %q", c.name, got.Note, c.wantNote)
+		}
+	}
+}
+
+// statLine renders the stderr line the filter writes, so the tests exercise the same
+// parse the host's output goes through.
+func statLine(st LogFilterStats) string {
+	return fmt.Sprintf("RTM_STAT lines=%d dated=%d emitted=%d first=%d last=%d pretrunc=%d tzseen=-",
+		st.Lines, st.Dated, st.Emitted, st.FirstKey, st.LastKey, st.PreTrunc)
 }
 
 // A command module that produced nothing is not a collection. journald with
@@ -263,5 +337,178 @@ func TestLogBasesAreResolvedWithoutHomeVar(t *testing.T) {
 	}
 	if !strings.Contains(sh, "/run/user/1001") {
 		t.Error("the runtime directory must use the login uid, not the effective one")
+	}
+}
+
+// Two rows can share a category and a module name and still be different places: the
+// catalog globs both /usr/local/liz/liz*/logs and .../log, and moduleNameFromLogDir
+// names each after its parent. Keying the dedupe on category/module alone dropped the
+// second silently — ticked in the tree, counted in the total, absent from the archive
+// and from the manifest.
+func TestPicksAreIdentifiedByDirectoryToo(t *testing.T) {
+	cat := defaultLogCatalog()
+	got, rejected := resolvePicks(cat, []LogPick{
+		{Category: LogCatModules, Module: "lizcollector", Dir: "/usr/local/liz/lizcollector/logs"},
+		{Category: LogCatModules, Module: "lizcollector", Dir: "/usr/local/liz/lizcollector/log"},
+	})
+	if len(got) != 2 {
+		t.Fatalf("both directories must survive, got %d (%v)", len(got), rejected)
+	}
+	if got[0].Dir == got[1].Dir {
+		t.Errorf("the two picks collapsed onto %q", got[0].Dir)
+	}
+	// The exact same row twice is still one job.
+	same, _ := resolvePicks(cat, []LogPick{
+		{Category: LogCatModules, Module: "lizcollector", Dir: "/usr/local/liz/lizcollector/logs"},
+		{Category: LogCatModules, Module: "lizcollector", Dir: "/usr/local/liz/lizcollector/logs"},
+	})
+	if len(same) != 1 {
+		t.Errorf("a duplicated pick must collapse: %+v", same)
+	}
+}
+
+// The survey has to report how much of a module is already compressed. Without it the
+// tree estimates a .gz archive at 35% of its size, promises a collection that fits,
+// and the server's own gate then refuses it — the "화면은 된다는데 서버가 거부" case.
+func TestSurveyReportsCompressedBytesAndFileModules(t *testing.T) {
+	sh := logSurveyScript(defaultLogCatalog(), 0)
+	for _, want := range []string{`%s %T@ %f`, `gz|gzip|zip|xz|bz2|zst|lz4|7z`, `isf=0; [ -f "$d" ] && isf=1`} {
+		if !strings.Contains(sh, want) {
+			t.Errorf("the survey must collect %q", want)
+		}
+	}
+	// ok row: cat|mod|ok|files|bytes|oldest|newest|b64dir|b64real|compressed|isfile
+	out := "H|dHJ1bmst\n" +
+		"M|middleware|kafka|ok|10|1000|1700000000|1700000900|" + b64("/data/kafka-log") + "|" +
+		b64("/data/kafka-log") + "|400|0\n" +
+		"M|middleware|keepalived|ok|1|800|1700000000|1700000900|" + b64("/var/log/messages") + "|" +
+		b64("/var/log/messages") + "|0|1\n" +
+		"M|middleware|mariadb|missing|0|0|0|0|" + b64("/data/mariadb-log") + "||0|0\n"
+	_, mods := parseLogSurvey(defaultLogCatalog(), out)
+	byMod := map[string]LogModuleStat{}
+	for _, m := range mods {
+		byMod[m.Module] = m
+	}
+	if k := byMod["kafka"]; k.Bytes != 1000 || k.CompressedBytes != 400 || k.IsFile {
+		t.Errorf("kafka = %+v", k)
+	}
+	if p := byMod["keepalived"]; !p.IsFile || p.CompressedBytes != 0 {
+		t.Errorf("a module naming one exact file must be marked: %+v", p)
+	}
+	if m, ok := byMod["mariadb"]; !ok || m.Status != "missing" {
+		t.Errorf("a missing module must still parse: %+v", m)
+	}
+	// A host that reports more compressed than total is not trusted over the total.
+	bad := "M|middleware|kafka|ok|10|1000|0|0|" + b64("/d") + "|" + b64("/d") + "|9999|0\n"
+	_, m2 := parseLogSurvey(defaultLogCatalog(), bad)
+	if len(m2) != 1 || m2[0].CompressedBytes != 1000 {
+		t.Errorf("compressed bytes must be clamped to the total: %+v", m2)
+	}
+}
+
+// After the app is closed mid-transfer the original manifest entries are gone, so the
+// leftover archive can only be checked for readability. That check has to actually
+// fail on a torn file, or "다시 내려받기" would delete the server's copy on the strength
+// of a truncated download.
+func TestInspectLogArchive(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "ok.tar.gz")
+	writeTarGz(t, good, map[string]string{
+		"srv/_MANIFEST.txt":               "manifest",
+		"srv/middleware/kafka/server.log": "hello",
+	})
+	sd, files, bytes, err := InspectLogArchive(good)
+	if err != nil || sd != "srv" || files != 1 || bytes != 5 {
+		t.Fatalf("InspectLogArchive = (%q,%d,%d,%v)", sd, files, bytes, err)
+	}
+
+	// A truncated transfer: cut the gzip stream in half.
+	raw, err := os.ReadFile(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	torn := filepath.Join(dir, "torn.tar.gz")
+	if err := os.WriteFile(torn, raw[:len(raw)/2], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := InspectLogArchive(torn); err == nil {
+		t.Error("a truncated archive must not pass the readability check")
+	}
+
+	// Something that is not one of ours has no manifest to trace it by.
+	noman := filepath.Join(dir, "noman.tar.gz")
+	writeTarGz(t, noman, map[string]string{"whatever.log": "x"})
+	if _, _, _, err := InspectLogArchive(noman); err == nil {
+		t.Error("an archive without a manifest must be refused")
+	}
+}
+
+func writeTarGz(t *testing.T, p string, files map[string]string) {
+	t.Helper()
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	names := make([]string, 0, len(files))
+	for n := range files {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		body := files[n]
+		if err := tw.WriteHeader(&tar.Header{Name: "./" + n, Mode: 0o600,
+			Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The copy is the long step — forty gigabytes takes minutes — so it has to report
+// progress while it runs. It used to be launched with CombinedOutput, which returns
+// only when the whole script is done, so the UI showed "복사 0/253" for the entire
+// copy and then jumped straight to 압축: a counter that promises to count and never
+// does is worse than no counter, because a working copy and a hung one look the same.
+func TestCopyScriptReportsProgressPerFile(t *testing.T) {
+	sh := logCopyScript("/data/.rtaskmgr-logs/log-1-aabbccdd", 0, 0, "", -1, 0)
+	if !strings.Contains(sh, `printf 'P|%s\n' "$idx"`) {
+		t.Error("the copy loop must emit a tick per finished job")
+	}
+	// The tick has to be outside the per-mode case, or the modes that return early
+	// would stop counting.
+	iEsac := strings.LastIndex(sh, "  esac")
+	iTick := strings.Index(sh, `printf 'P|%s\n'`)
+	iDone := strings.Index(sh, "\ndone")
+	if iEsac < 0 || iTick < iEsac || iTick > iDone {
+		t.Error("the tick must be emitted once per loop iteration, after the mode switch")
+	}
+	// And the caller must stream rather than wait for the whole script.
+	src := scriptSources(t)["logcollect_run.go"]
+	i := strings.Index(src, "func (m *Manager) StartLogCollect")
+	if i < 0 {
+		t.Fatal("StartLogCollect not found")
+	}
+	body := src[i:]
+	if j := strings.Index(body, "\nfunc "); j > 0 {
+		body = body[:j]
+	}
+	if !strings.Contains(body, "m.streamRun(") {
+		t.Error("the copy must be streamed so its ticks can be counted as they arrive")
+	}
+	for _, banned := range []string{"m.sudoRun(s, script)", "m.plainRun(s, script)"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("the copy must not use %q — it blocks until the script ends", banned)
+		}
 	}
 }

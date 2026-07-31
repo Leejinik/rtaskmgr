@@ -222,6 +222,10 @@ export function PwLedger(arg1) {
   return window['go']['main']['App']['PwLedger'](arg1);
 }
 
+export function RedownloadLogCollect(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RedownloadLogCollect'](arg1, arg2, arg3);
+}
+
 export function RenewPasswords(arg1) {
   return window['go']['main']['App']['RenewPasswords'](arg1);
 }

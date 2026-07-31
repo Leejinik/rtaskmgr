@@ -25,10 +25,24 @@ func TestParseFilterStats(t *testing.T) {
 
 // The verdict logic is where "never ship a silently truncated log" is enforced.
 func TestFilterVerdict(t *testing.T) {
-	full := LogFilterStats{Found: true, Lines: 100, Dated: 40, Emitted: 100}
+	// A run that actually trimmed something: fewer lines out than in.
+	trimmed := LogFilterStats{Found: true, Lines: 100, Dated: 40, Emitted: 60}
 
-	if v, _ := filterVerdict(logFilterEmitted, full); v != LogTakeFiltered {
+	if v, _ := filterVerdict(logFilterEmitted, trimmed); v != LogTakeFiltered {
 		t.Errorf("a healthy run should be trusted, got %q", v)
+	}
+	// A run that kept EVERY line did not cut the file, and saying it did is a lie the
+	// reader cannot detect — an active log holding only today's entries would be
+	// labelled as trimmed at a date a week earlier.
+	uncut := LogFilterStats{Found: true, Lines: 100, Dated: 40, Emitted: 100}
+	if v, n := filterVerdict(logFilterEmitted, uncut); v != LogTakeUncut || n == "" {
+		t.Errorf("nothing dropped = (%q,%q), want uncut with a note", v, n)
+	}
+	// …but a head dropped for the buffer limit IS a cut, even if every remaining line
+	// was emitted.
+	if v, _ := filterVerdict(logFilterEmitted,
+		LogFilterStats{Found: true, Lines: 100, Dated: 40, Emitted: 100, PreTrunc: 7}); v != LogTakeFiltered {
+		t.Errorf("a truncated prologue must still count as cut, got %q", v)
 	}
 	// Undatable → take everything rather than nothing.
 	if v, n := filterVerdict(logFilterUndatable, LogFilterStats{Found: true, Lines: 50}); v != LogTakeWhole || n == "" {

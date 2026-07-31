@@ -117,6 +117,8 @@ export function PwConfig():Promise<pwledger.Config>;
 
 export function PwLedger(arg1:string):Promise<Array<pwledger.Entry>>;
 
+export function RedownloadLogCollect(arg1:string,arg2:string,arg3:string):Promise<main.LogCollectHostResult>;
+
 export function RenewPasswords(arg1:string):Promise<void>;
 
 export function ResetLogCollectCatalog():Promise<monitor.LogCatalog>;

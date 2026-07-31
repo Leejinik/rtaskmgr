@@ -886,6 +886,53 @@ func (m *Manager) sudoRun(s *session, inner string) (string, error) {
 	return string(out), err
 }
 
+// streamRun executes a script and hands each stdout line to onLine as it arrives,
+// returning everything it printed.
+//
+// It exists because CombinedOutput returns only once the script has finished, so a
+// progress counter fed from it can never move. Copying forty gigabytes of logs takes
+// minutes, and "복사 0/253" sitting still for all of them is worse than no counter at
+// all: the operator cannot tell a working copy from a hung one, and the number is a
+// promise the code never keeps.
+func (m *Manager) streamRun(s *session, inner string, elevated bool, onLine func(string)) (string, error) {
+	sess, err := s.client.NewSession()
+	if err != nil {
+		return "", err
+	}
+	defer sess.Close()
+	cmd := "bash -c " + shellQuote(inner)
+	if elevated && s.useSudo {
+		sess.Stdin = strings.NewReader(s.password + "\n")
+		cmd = "sudo -S -p '' bash -c " + shellQuote(inner)
+	}
+	stdout, err := sess.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	// stderr is kept out of the line stream (a warning must not be parsed as a
+	// record) but appended to the returned text, which is what the caller reports on
+	// failure.
+	var errBuf bytes.Buffer
+	sess.Stderr = &errBuf
+	if err := sess.Start(cmd); err != nil {
+		return "", err
+	}
+	var out strings.Builder
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 0, 8*1024), 1024*1024)
+	for sc.Scan() {
+		line := sc.Text()
+		out.WriteString(line)
+		out.WriteByte('\n')
+		if onLine != nil {
+			onLine(line)
+		}
+	}
+	werr := sess.Wait()
+	out.WriteString(errBuf.String())
+	return out.String(), werr
+}
+
 // plainRun executes a command as the login user (never elevated).
 func (m *Manager) plainRun(s *session, inner string) (string, error) {
 	sess, err := s.client.NewSession()

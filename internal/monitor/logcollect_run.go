@@ -109,26 +109,26 @@ type LogPlan struct {
 
 // LogJob is one collection, from the copy to the cleanup.
 type LogJob struct {
-	ID           string     `json:"id"`
-	HostID       string     `json:"hostId"`
-	ServerDir    string     `json:"serverDir"`
-	StageRoot    string     `json:"stageRoot"`
-	Archive      string     `json:"archive"`
-	Target       string     `json:"target"`
-	Files        int        `json:"files"`
-	TotalBytes   int64      `json:"totalBytes"`
-	ArchiveBytes int64      `json:"archiveBytes"`
-	Stage string `json:"stage"`
+	ID           string `json:"id"`
+	HostID       string `json:"hostId"`
+	ServerDir    string `json:"serverDir"`
+	StageRoot    string `json:"stageRoot"`
+	Archive      string `json:"archive"`
+	Target       string `json:"target"`
+	Files        int    `json:"files"`
+	TotalBytes   int64  `json:"totalBytes"`
+	ArchiveBytes int64  `json:"archiveBytes"`
+	Stage        string `json:"stage"`
 	// Leftover names something this job left on the host that the operator should be
 	// offered a way to remove. It is set explicitly rather than inferred, because a
 	// leftover nobody is told about is how this feature would quietly fill a data
 	// partition. Cleaning up by collection id removes the staging tree AND the
 	// archive, so either path is a sufficient handle.
-	Leftover string `json:"leftover,omitempty"`
-	Err      string `json:"err,omitempty"`
-	StartMs      int64      `json:"startMs"`
-	EndMs        int64      `json:"endMs"`
-	Entries      []LogEntry `json:"entries,omitempty"`
+	Leftover string     `json:"leftover,omitempty"`
+	Err      string     `json:"err,omitempty"`
+	StartMs  int64      `json:"startMs"`
+	EndMs    int64      `json:"endMs"`
+	Entries  []LogEntry `json:"entries,omitempty"`
 }
 
 // Collection stages, reported as progress.
@@ -166,7 +166,13 @@ func resolvePicks(cat LogCatalog, picks []LogPick) (out []logPickDef, rejected [
 	}
 	seen := map[string]bool{}
 	for _, p := range picks {
-		key := p.Category + "/" + p.Module
+		// The directory is part of the identity. Two rows can share a category and a
+		// module name and still be different places — the catalog globs both
+		// /usr/local/liz/liz*/logs and .../log, and moduleNameFromLogDir names each
+		// after its parent. Keying on category/module alone silently dropped the
+		// second one: the operator saw it ticked, its size counted toward the total,
+		// and it was absent from the archive with no line in the manifest.
+		key := p.Category + "/" + p.Module + "\x00" + p.Dir
 		if seen[key] {
 			continue
 		}
@@ -663,6 +669,9 @@ func filterActionFor(rc int, st LogFilterStats) string {
 		return "whole"
 	case st.Lines > 0 && st.Dated*10 < st.Lines:
 		return "whole"
+	case st.PreTrunc == 0 && st.Emitted == st.Lines:
+		// Ran, dropped nothing: the file is complete and must not be marked as cut.
+		return "nocut"
 	}
 	return "filtered"
 }
@@ -720,10 +729,18 @@ while IFS= read -r -d '' -u 9 idx \
         if(RC!=0){print "whole"; exit}
         if(v["lines"]>0 && v["emitted"]==0){print "whole"; exit}
         if(v["lines"]>0 && v["dated"]*10 < v["lines"]){print "whole"; exit}
+        if(v["pretrunc"]==0 && v["emitted"]==v["lines"]){print "nocut"; exit}
         print "filtered"
       }' "$CTL/err" 2>/dev/null)
     case $keep in
     filtered) : ;;
+    nocut)
+      # 한 줄도 버려지지 않았다 = 이 파일은 잘리지 않았다. 잘림 표시가 붙은 이름으로
+      # 두면 읽는 사람이 있지도 않았던 앞부분을 찾게 된다. 내용은 그대로이므로 이름만
+      # 바꾸고(같은 파일시스템이라 rename), 원본의 mtime 을 되돌려 준다.
+      mv -f -- "$dstcut" "$dst" 2>/dev/null || keep=fail
+      touch -r "$src" "$dst" 2>/dev/null
+      ;;
     whole)
       rm -f -- "$dstcut"
       # The fallback copy can fail on its own, and its stderr must replace the
@@ -751,6 +768,9 @@ while IFS= read -r -d '' -u 9 idx \
     printf 'R|%s|%s|%s|%s\n' "$idx" "$keep" "$rc" "$(tail -c 400 "$CTL/err" 2>/dev/null | base64 -w0)"
     ;;
   esac
+  # One tick per finished job. The caller streams these, so a copy that takes ten
+  # minutes says so continuously instead of reporting 0 until it is over.
+  printf 'P|%s\n' "$idx"
 done
 exec 9<&-
 rm -f -- "$CTL/err" "$CTL/crc"
@@ -1235,11 +1255,23 @@ func (m *Manager) StartLogCollect(hostID string, req LogRequest, cat LogCatalog,
 		chownUID = s.uid
 	}
 	script := logCopyScript(stageRoot, plan.FromMs, plan.ToMs, req.TZ, chownUID, req.JournalMaxBytes)
-	if s.elevated {
-		copyOut, _ = m.sudoRun(s, script)
-	} else {
-		copyOut, _ = m.plainRun(s, script)
-	}
+	// Streamed, not CombinedOutput: the copy is the long step, and its ticks are the
+	// only thing telling the operator it is moving. Throttled, because a kafka
+	// directory holds thousands of files and one UI event per file would flood the
+	// renderer with work nobody can read.
+	copied := 0
+	lastTick := time.Now()
+	copyOut, _ = m.streamRun(s, script, s.elevated, func(line string) {
+		if !strings.HasPrefix(line, "P|") {
+			return
+		}
+		copied++
+		if time.Since(lastTick) >= 120*time.Millisecond {
+			lastTick = time.Now()
+			step(LogStageCopy, int64(copied), int64(plan.Files))
+		}
+	})
+	step(LogStageCopy, int64(copied), int64(plan.Files))
 	if !strings.Contains(copyOut, "DONE|copy") {
 		// The copy died part-way — a dropped channel, a rotated sudo password, the app
 		// restarting — with up to the whole selection already on disk.
@@ -1349,14 +1381,21 @@ func applyCopyResults(entries []LogEntry, res map[int]logCopyResult) []LogEntry 
 			if st.Found {
 				out[i].FirstMs, out[i].LastMs = keyMs(st.FirstKey), keyMs(st.LastKey)
 			}
-		case "whole":
-			// The filter was not trusted here, so the file was taken whole — and the
-			// ".from-" marker must come off, because a marker on a complete file is a
-			// lie the reader has no way to detect.
+		case "whole", "nocut":
+			// Either the filter was not trusted, or it ran and kept every line. Both
+			// mean the file is complete, so the ".from-" marker must come off: a marker
+			// on an untrimmed file is a lie the reader has no way to detect, and it
+			// sends them looking for content that never existed.
 			out[i].Action = LogTakeWhole
+			if r.Keep == "nocut" {
+				out[i].Action = LogTakeUncut
+			}
 			out[i].Cut, out[i].CutFrom, out[i].CutTo = false, "", ""
 			out[i].Arch = out[i].ArchWhole
 			out[i].Note = joinNote(out[i].Note, note)
+			if r.Keep == "nocut" && st.Found {
+				out[i].FirstMs, out[i].LastMs = keyMs(st.FirstKey), keyMs(st.LastKey)
+			}
 		case "none":
 			out[i].Skipped = note
 			if out[i].Skipped == "" {
@@ -1509,6 +1548,56 @@ func VerifyLogArchive(localPath, serverDir string, entries []LogEntry) error {
 		have[strings.TrimPrefix(path.Clean(h.Name), "./")] = h.Size
 	}
 	return matchArchive(have, serverDir, entries)
+}
+
+// InspectLogArchive reads a downloaded archive end to end and reports what it holds.
+//
+// It is the check available when the manifest entries are gone — after the app was
+// closed mid-transfer, the collection that produced the leftover no longer exists in
+// memory, so there is nothing to match path-by-path against. This is weaker than
+// VerifyLogArchive and deliberately so: it proves the gzip stream and every tar
+// header read cleanly to EOF (which is what a truncated transfer fails), and that the
+// archive carries the manifest that makes it traceable. Callers must say which of the
+// two checks they ran rather than presenting them as the same thing.
+func InspectLogArchive(localPath string) (serverDir string, files int, bytes int64, err error) {
+	f, err := os.Open(localPath)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("내려받은 파일을 열 수 없습니다: %w", err)
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("압축을 풀 수 없습니다 (전송이 손상되었을 수 있습니다): %w", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		h, nerr := tr.Next()
+		if nerr == io.EOF {
+			break
+		}
+		if nerr != nil {
+			return "", 0, 0, fmt.Errorf("아카이브를 읽는 중 오류 (전송이 끊겼을 수 있습니다): %w", nerr)
+		}
+		if h.Typeflag != tar.TypeReg {
+			continue
+		}
+		name := strings.TrimPrefix(path.Clean(h.Name), "./")
+		if path.Base(name) == "_MANIFEST.txt" {
+			serverDir = path.Dir(name)
+			continue
+		}
+		files++
+		bytes += h.Size
+	}
+	if serverDir == "" || serverDir == "." {
+		return "", files, bytes, fmt.Errorf("아카이브에 매니페스트가 없습니다 — 우리가 만든 수집물이 아닐 수 있습니다")
+	}
+	if files == 0 {
+		return serverDir, 0, 0, fmt.Errorf("아카이브에 파일이 없습니다")
+	}
+	return serverDir, files, bytes, nil
 }
 
 // matchArchive compares what the archive holds against what the manifest claims.

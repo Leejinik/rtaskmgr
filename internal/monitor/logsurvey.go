@@ -20,11 +20,19 @@ type LogModuleStat struct {
 	// would copy everything twice.
 	RealDir string `json:"realDir"`
 	// Status: ok | missing | denied | cmd
-	Status    string `json:"status"`
-	Files     int    `json:"files"`
-	Bytes     int64  `json:"bytes"`
-	OldestMs  int64  `json:"oldestMs"`
-	NewestMs  int64  `json:"newestMs"`
+	Status   string `json:"status"`
+	Files    int    `json:"files"`
+	Bytes    int64  `json:"bytes"`
+	OldestMs int64  `json:"oldestMs"`
+	NewestMs int64  `json:"newestMs"`
+	// CompressedBytes is how much of Bytes is already-compressed files. The archive
+	// estimate has to know: a .gz will not shrink again, and pretending it will is
+	// what makes the UI promise a collection the server's disk gate then refuses.
+	CompressedBytes int64 `json:"compressedBytes"`
+	// IsFile marks a module that names one exact file rather than a directory
+	// (keepalived → /var/log/messages). The tree needs it to avoid counting that file
+	// twice when a recursive scan of its parent is selected as well.
+	IsFile    bool   `json:"isFile"`
 	NeedsRoot bool   `json:"needsRoot"`
 	IsCmd     bool   `json:"isCmd"`
 	Recursive bool   `json:"recursive"`
@@ -113,17 +121,19 @@ func logSurveyScript(cat LogCatalog, fromMs int64) string {
 rtm_agg(){
   d=$RTM_DIR
   if [ ! -e "$d" ]; then
-    printf '%s|%s|%s|missing|0|0|0|0|%s|\n' "$RTM_KIND" "$RTM_CAT" "$RTM_MOD" "$(rtm_b64 "$d")"; return
+    printf '%s|%s|%s|missing|0|0|0|0|%s||0|0\n' "$RTM_KIND" "$RTM_CAT" "$RTM_MOD" "$(rtm_b64 "$d")"; return
   fi
   if [ ! -r "$d" ]; then
-    printf '%s|%s|%s|denied|0|0|0|0|%s|\n' "$RTM_KIND" "$RTM_CAT" "$RTM_MOD" "$(rtm_b64 "$d")"; return
+    printf '%s|%s|%s|denied|0|0|0|0|%s||0|0\n' "$RTM_KIND" "$RTM_CAT" "$RTM_MOD" "$(rtm_b64 "$d")"; return
   fi
   rd=$(readlink -f "$d" 2>/dev/null || printf %s "$d")
-  set -- $(eval "find \"\$d\" $RTM_FIND -printf '%s %T@\n' 2>/dev/null" | awk '
-    {n++; s+=$1; t=int($2); if(o==0||t<o)o=t; if(t>x)x=t}
-    END{printf("%d %d %d %d\n", n+0, s+0, o+0, x+0)}')
-  printf '%s|%s|%s|ok|%s|%s|%s|%s|%s|%s\n' "$RTM_KIND" "$RTM_CAT" "$RTM_MOD" \
-    "${1:-0}" "${2:-0}" "${3:-0}" "${4:-0}" "$(rtm_b64 "$d")" "$(rtm_b64 "$rd")"
+  isf=0; [ -f "$d" ] && isf=1
+  set -- $(eval "find \"\$d\" $RTM_FIND -printf '%s %T@ %f\n' 2>/dev/null" | awk '
+    {n++; s+=$1; t=int($2); if(o==0||t<o)o=t; if(t>x)x=t;
+     if($NF ~ /\.(gz|gzip|zip|xz|bz2|zst|lz4|7z)$/) c+=$1}
+    END{printf("%d %d %d %d %d\n", n+0, s+0, o+0, x+0, c+0)}')
+  printf '%s|%s|%s|ok|%s|%s|%s|%s|%s|%s|%s|%s\n' "$RTM_KIND" "$RTM_CAT" "$RTM_MOD" \
+    "${1:-0}" "${2:-0}" "${3:-0}" "${4:-0}" "$(rtm_b64 "$d")" "$(rtm_b64 "$rd")" "${5:-0}" "$isf"
 }
 `)
 
@@ -146,7 +156,7 @@ rtm_agg(){
 			if d.IsCmd() {
 				// A command's size is unknowable until it runs; the tree shows it as a
 				// command rather than guessing.
-				sb.WriteString("printf 'M|%s|%s|cmd|0|0|0|0|%s|\\n' " +
+				sb.WriteString("printf 'M|%s|%s|cmd|0|0|0|0|%s||0|0\\n' " +
 					shellQuote(c.Key) + " " + shellQuote(d.Name) + " " + shellQuote(b64(d.Cmd)) + "\n")
 				continue
 			}
@@ -184,8 +194,8 @@ func parseLogSurvey(cat LogCatalog, out string) (hostname string, mods []LogModu
 			continue
 		}
 		kind := line[:1]
-		p := strings.SplitN(line[2:], "|", 9)
-		if len(p) < 9 {
+		p := strings.SplitN(line[2:], "|", 11)
+		if len(p) < 11 {
 			continue
 		}
 		st := LogModuleStat{
@@ -206,6 +216,11 @@ func parseLogSurvey(cat LogCatalog, out string) (hostname string, mods []LogModu
 		if v, err := strconv.ParseInt(p[6], 10, 64); err == nil && v > 0 {
 			st.NewestMs = v * 1000
 		}
+		st.CompressedBytes, _ = strconv.ParseInt(strings.TrimSpace(p[9]), 10, 64)
+		if st.CompressedBytes > st.Bytes {
+			st.CompressedBytes = st.Bytes
+		}
+		st.IsFile = strings.TrimSpace(p[10]) == "1"
 		if kind == "G" {
 			// A discovered directory is named after the directory that contains it.
 			st.Module = moduleNameFromLogDir(st.Dir)

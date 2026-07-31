@@ -131,15 +131,17 @@ func (a *App) ResetLogCollectCatalog() monitor.LogCatalog {
 // and where a collection could be staged. Hosts are surveyed concurrently — a
 // cluster of six that answered one after another would keep the operator waiting on
 // the slowest link for no reason.
-func (a *App) LogCollectSurvey(hostIDs []string, recentDays int) []monitor.LogSurvey {
-	idents := a.serverIdents(hostIDs)
-	fromMs := int64(0)
-	if recentDays > 0 {
-		start := time.Now().AddDate(0, 0, -recentDays)
-		y, m, d := start.Date()
-		fromMs = time.Date(y, m, d, 0, 0, 0, 0, time.Local).UnixMilli()
+//
+// fromMs is the start of the window, as an absolute instant, or 0 for "everything".
+// It is taken rather than derived from a day count so that an explicit date range
+// reaches the survey too: sizing the tree over all of time while the collection will
+// only take two days makes the disk arithmetic meaningless, and a server that would
+// have fit gets shown as too full to collect from.
+func (a *App) LogCollectSurvey(hostIDs []string, fromMs int64) []monitor.LogSurvey {
+	if fromMs < 0 {
+		fromMs = 0
 	}
-	return a.mgr.LogSurveyCluster(idents, a.LogCollectCatalog(), fromMs)
+	return a.mgr.LogSurveyCluster(a.serverIdents(hostIDs), a.LogCollectCatalog(), fromMs)
 }
 
 // serverIdents resolves this app's label and address for each host.
@@ -334,6 +336,13 @@ func (a *App) collectOneHost(t LogCollectTask, outDir, stamp string) LogCollectH
 		// The archive is still on the host. That is deliberate — it is what makes a
 		// failed transfer retryable instead of a collection that has to be redone.
 		out.LeftOnHost = job.Archive
+		// Take back the name we claimed. streamRemoteFile renames its temp file over
+		// it on success, so a placeholder that is still empty means nothing arrived —
+		// and leaving a 0-byte .tar.gz on the operator's desktop next to the real ones
+		// is its own small lie about what was collected.
+		if fi, serr := os.Stat(local); serr == nil && fi.Size() == 0 {
+			_ = os.Remove(local)
+		}
 		emit(monitor.LogStageDownload, n, job.ArchiveBytes, out.Err)
 		return out
 	}
@@ -396,6 +405,89 @@ func (a *App) LogCollectLeftovers(hostIDs []string) []monitor.LogLeftover {
 		return all[i].MtimeMs > all[j].MtimeMs
 	})
 	return all
+}
+
+// RedownloadLogCollect fetches an archive a previous run left on a host.
+//
+// This is what makes an interrupted transfer worth leaving behind. Until it existed
+// the leftovers panel could only offer deletion, so closing the app during a download
+// meant re-copying and re-compressing gigabytes on a server that is already unwell —
+// the archive was retryable in principle and unreachable in practice.
+//
+// The manifest entries from the original run are gone, so the archive is checked with
+// InspectLogArchive (the gzip stream and every tar header read to EOF, and a manifest
+// is present) rather than matched path-by-path. The result says which check ran.
+func (a *App) RedownloadLogCollect(hostID, leftoverPath, dir string) (LogCollectHostResult, error) {
+	out := LogCollectHostResult{HostID: hostID, Name: hostID}
+	if a.hosts != nil {
+		if h, ok, _ := a.hosts.Get(hostID); ok && h.Name != "" {
+			out.Name = h.Name
+		}
+	}
+	base, id, ok := splitLeftoverPath(leftoverPath)
+	if !ok {
+		return out, fmt.Errorf("내려받을 수 없는 경로입니다: %s", leftoverPath)
+	}
+	if dir == "" {
+		return out, fmt.Errorf("저장할 폴더가 없습니다")
+	}
+	if a.logDL.busy() {
+		return out, fmt.Errorf("이미 로그 다운로드가 진행 중입니다")
+	}
+	out.CollectID, out.Target = id, base
+
+	local, err := claimLocalPath(dir, "rtaskmgr-logs-"+id, ".tar.gz")
+	if err != nil {
+		return out, err
+	}
+	key := hostID + "/" + id
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.logDL.add(key, cancel)
+	defer func() { a.logDL.done(key); cancel() }()
+
+	emit := func(stage string, done, total int64, errMsg string) {
+		pct := 0.0
+		if total > 0 {
+			pct = float64(done) / float64(total) * 100
+		}
+		wruntime.EventsEmit(a.ctx, "logCollect", map[string]interface{}{
+			"hostId": hostID, "name": out.Name, "stage": stage,
+			"done": done, "total": total, "pct": pct, "err": errMsg,
+		})
+	}
+	emit(monitor.LogStageDownload, 0, 0, "")
+	n, err := a.mgr.DownloadLogArchiveTo(ctx, hostID, id, base, local,
+		func(copied, total int64) { emit(monitor.LogStageDownload, copied, total, "") })
+	if err != nil {
+		out.Err = err.Error()
+		out.LeftOnHost = leftoverPath
+		if fi, serr := os.Stat(local); serr == nil && fi.Size() == 0 {
+			_ = os.Remove(local)
+		}
+		emit(monitor.LogStageDownload, n, 0, out.Err)
+		return out, err
+	}
+	out.Path, out.Bytes = local, n
+
+	emit(monitor.LogStageVerify, 0, 0, "")
+	serverDir, files, _, verr := monitor.InspectLogArchive(local)
+	if verr != nil {
+		out.Err = verr.Error()
+		out.LeftOnHost = leftoverPath
+		emit(monitor.LogStageVerify, 0, 0, out.Err)
+		return out, verr
+	}
+	out.ServerDir, out.Files = serverDir, files
+
+	emit(monitor.LogStageCleanup, 0, 0, "")
+	if cerr := a.mgr.CleanupLogCollect(hostID, id, base); cerr != nil {
+		out.LeftOnHost = leftoverPath
+		emit(monitor.LogStageCleanup, 0, 0, cerr.Error())
+		return out, nil
+	}
+	out.Cleaned = true
+	emit(monitor.LogStageDone, n, n, "")
+	return out, nil
 }
 
 // DeleteLogCollectLeftover removes one collection's leftovers from a host. The

@@ -406,6 +406,7 @@ func TestCopyScriptVerdictMatchesGo(t *testing.T) {
 		action := filterActionFor(c.rc, c.st)
 		want := map[string]string{
 			LogTakeFiltered: "filtered",
+			LogTakeUncut:    "nocut", // ran, dropped nothing → must not be marked as cut
 			LogTakeNone:     "none",
 			LogTakeWhole:    "whole",
 			LogTakeFailed:   "whole", // uncertainty always resolves to taking everything
@@ -421,6 +422,7 @@ func TestCopyScriptVerdictMatchesGo(t *testing.T) {
 		`if(RC!=0){print "whole"; exit}`,
 		`if(v["lines"]>0 && v["emitted"]==0){print "whole"; exit}`,
 		`if(v["lines"]>0 && v["dated"]*10 < v["lines"]){print "whole"; exit}`,
+		`if(v["pretrunc"]==0 && v["emitted"]==v["lines"]){print "nocut"; exit}`,
 		`if(!ok){print "whole"; exit}`,
 	} {
 		if !strings.Contains(sh, want) {

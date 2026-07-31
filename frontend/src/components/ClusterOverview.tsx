@@ -4,6 +4,7 @@ import { Frame, HostStatus, SysSample, Proc } from "../types";
 import { pct, bytesRate, mib } from "../format";
 import Sparkline from "./Sparkline";
 import ContextMenu from "./ContextMenu";
+import LogCollectView, { LogCollectProgress, LogCollectTaskReq } from "./LogCollectView";
 
 const REFRESH_OPTS = [1, 2, 3, 5, 10, 15, 20, 30, 60];
 
@@ -25,6 +26,20 @@ interface Props {
   // is no "selected host" on the overview, and the interface, ports and storage
   // partition differ per host, so a bulk capture action would not be meaningful.
   capturing?: Record<string, boolean>;
+  // Bulk log collection. The run itself is owned by App — it takes minutes and the
+  // operator must be able to leave this view and come back to it.
+  clusterId: string;
+  logCollect: {
+    running: boolean;
+    progress: Record<string, LogCollectProgress>;
+    result: any | null;
+    onStart: (tasks: LogCollectTaskReq[]) => void;
+    onCancel: () => void;
+    onOpenFolder: () => void;
+    onBundle: () => void;
+    onClearResult: () => void;
+    onRedownload: (hostId: string, path: string) => Promise<void>;
+  };
 }
 
 const fmtGB = (kib: number) => `${(kib / 1024 / 1024).toFixed(1)} GB`;
@@ -283,10 +298,10 @@ const PER_PAGE_OPTS: (number | "all")[] = [1, 2, 3, 4, 5, "all"];
 export default function ClusterOverview({
   clusterName, hosts, frames, status, sysHist, refreshSec,
   onOpenHost, onConnectOne, onConnectAll, onDisconnectAll, onChangeInterval, onProcMenu,
-  capturing,
+  capturing, clusterId, logCollect,
 }: Props) {
   const connectedCount = hosts.filter((h) => status[h.id]?.state === "streaming").length;
-  const [mode, setMode] = useState<"summary" | "proc">("summary");
+  const [mode, setMode] = useState<"summary" | "proc" | "logs">("summary");
   const [hideKthreads, setHideKthreads] = useState(true);
   const [page, setPage] = useState(0);
   const [sort, setSort] = useState<Sort>({ key: "cpu", dir: -1 });
@@ -366,6 +381,11 @@ export default function ClusterOverview({
             onClick={() => setMode("summary")}>요약</button>
           <button className={"toolbtn" + (mode === "proc" ? " primary" : "")}
             onClick={() => setMode("proc")}>프로세스</button>
+          <button className={"toolbtn" + (mode === "logs" ? " primary" : "")}
+            onClick={() => setMode("logs")}
+            title="여러 서버의 로그를 한 번에 모아 압축·다운로드합니다">
+            🗂 로그 수집{logCollect.running ? " ●" : ""}
+          </button>
         </div>
         <button className="toolbtn primary" onClick={onConnectAll}>모두 연결</button>
         <button className="toolbtn" onClick={onDisconnectAll}>모두 해제</button>
@@ -425,7 +445,30 @@ export default function ClusterOverview({
         </label>
       </div>
 
-      {mode === "summary" ? (
+      {mode === "logs" && (
+        <LogCollectView
+          // Switching clusters must rebuild this view. Without the key React keeps the
+          // mounted instance and only swaps clusterId, so A's survey, selection and
+          // staging targets stay on screen under B's name — and the save effect writes
+          // A's selection into B's storage key. Pressing 수집 → 다운로드 then collects
+          // from A while the operator is looking at B.
+          key={clusterId}
+          clusterId={clusterId}
+          hosts={hosts}
+          connected={Object.fromEntries(hosts.map((h) => [h.id, status[h.id]?.state === "streaming"]))}
+          running={logCollect.running}
+          progress={logCollect.progress}
+          result={logCollect.result}
+          onStart={logCollect.onStart}
+          onCancel={logCollect.onCancel}
+          onOpenFolder={logCollect.onOpenFolder}
+          onBundle={logCollect.onBundle}
+          onClearResult={logCollect.onClearResult}
+          onRedownload={logCollect.onRedownload}
+        />
+      )}
+
+      {mode === "summary" && (
         <div className={`cluster-grid ${cardSize}`}>
           {hosts.map((h) => (
             <ServerCard
@@ -440,7 +483,9 @@ export default function ClusterOverview({
             />
           ))}
         </div>
-      ) : (
+      )}
+
+      {mode === "proc" && (
         <div className="proc-split">
           {pageHosts.map((h) => (
             <ServerProcColumn

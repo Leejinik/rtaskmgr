@@ -825,6 +825,8 @@ export namespace monitor {
 	    bytes: number;
 	    oldestMs: number;
 	    newestMs: number;
+	    compressedBytes: number;
+	    isFile: boolean;
 	    needsRoot: boolean;
 	    isCmd: boolean;
 	    recursive: boolean;
@@ -846,6 +848,8 @@ export namespace monitor {
 	        this.bytes = source["bytes"];
 	        this.oldestMs = source["oldestMs"];
 	        this.newestMs = source["newestMs"];
+	        this.compressedBytes = source["compressedBytes"];
+	        this.isFile = source["isFile"];
 	        this.needsRoot = source["needsRoot"];
 	        this.isCmd = source["isCmd"];
 	        this.recursive = source["recursive"];

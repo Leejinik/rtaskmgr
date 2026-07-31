@@ -61,7 +61,8 @@ func parseFilterStats(stderr string) LogFilterStats {
 
 // Verdicts for what to do with a filter run's output.
 const (
-	LogTakeFiltered = "filtered" // use the filtered output
+	LogTakeFiltered = "filtered" // the filter dropped something; use its output
+	LogTakeUncut    = "uncut"    // the filter ran but dropped nothing: the file is whole
 	LogTakeWhole    = "whole"    // the filter cannot be trusted here: copy it all
 	LogTakeNone     = "none"     // genuinely nothing in range
 	LogTakeFailed   = "failed"   // the run itself failed
@@ -108,6 +109,15 @@ func filterVerdict(exitCode int, st LogFilterStats) (verdict, note string) {
 	}
 	if st.PreTrunc > 0 {
 		return LogTakeFiltered, fmt.Sprintf("파일 앞부분 %d줄은 버퍼 한도로 제외됐습니다", st.PreTrunc)
+	}
+	if st.Emitted == st.Lines {
+		// The filter ran and kept every line. Nothing was cut, so the file must NOT
+		// carry a ".from-" marker — an active log that only holds today's entries is
+		// complete, and telling the reader it was trimmed at a date a week ago makes
+		// them go looking for content that never existed. Every never-rotated active
+		// log lands here (its start is unknowable from the filename, so T1 has to read
+		// it), which is why this is the common case rather than an edge one.
+		return LogTakeUncut, "요청 기간이 파일 전체를 포함합니다 (버려진 줄 없음)"
 	}
 	return LogTakeFiltered, ""
 }
