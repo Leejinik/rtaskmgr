@@ -274,6 +274,34 @@ export function StartScheduled(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['StartScheduled'](arg1, arg2, arg3, arg4);
 }
 
+export function StatsConnections() {
+  return window['go']['main']['App']['StatsConnections']();
+}
+
+export function StatsImportPatterns(arg1) {
+  return window['go']['main']['App']['StatsImportPatterns'](arg1);
+}
+
+export function StatsInspect(arg1) {
+  return window['go']['main']['App']['StatsInspect'](arg1);
+}
+
+export function StatsRegister(arg1) {
+  return window['go']['main']['App']['StatsRegister'](arg1);
+}
+
+export function StatsRetry(arg1, arg2) {
+  return window['go']['main']['App']['StatsRetry'](arg1, arg2);
+}
+
+export function StatsSaveConnection(arg1) {
+  return window['go']['main']['App']['StatsSaveConnection'](arg1);
+}
+
+export function StatsValidate(arg1) {
+  return window['go']['main']['App']['StatsValidate'](arg1);
+}
+
 export function StopCapture(arg1, arg2) {
   return window['go']['main']['App']['StopCapture'](arg1, arg2);
 }

@@ -19,11 +19,13 @@ import (
 	"rtaskmgr/internal/monitor"
 	"rtaskmgr/internal/pwledger"
 	"rtaskmgr/internal/record"
+	"rtaskmgr/internal/statsreg"
 	"rtaskmgr/internal/store"
 	"rtaskmgr/internal/updater"
 )
 
 type App struct {
+	stats statsreg.Service
 	ctx   context.Context
 	hosts *host.Store
 	mgr   *monitor.Manager
@@ -73,6 +75,7 @@ func NewApp(rpmFS fs.FS) *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.stats.Progress = func(m string) { wruntime.EventsEmit(ctx, "statsProgress", m) }
 
 	hs, err := host.New()
 	if err != nil {

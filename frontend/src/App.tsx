@@ -24,6 +24,7 @@ import PerformanceView from "./components/PerformanceView";
 import DetailModal from "./components/DetailModal";
 import ConnectDialog from "./components/ConnectDialog";
 import ClusterDialog from "./components/ClusterDialog";
+import StatsRegistration from "./components/StatsRegistration";
 import ClusterPasswordDialog from "./components/ClusterPasswordDialog";
 import ClusterOverview from "./components/ClusterOverview";
 import { LogCollectProgress, LogCollectTaskReq } from "./components/LogCollectView";
@@ -87,6 +88,7 @@ export default function App() {
 
   const [dialog, setDialog] = useState<{ open: boolean; editing?: host.Host }>({ open: false });
   const [clusterDialogOpen, setClusterDialogOpen] = useState(false);
+  const [statsOpen, setStatsOpen] = useState(false);
   const [clusterEdit, setClusterEdit] = useState<{ id: string; name: string; hosts: host.Host[] } | null>(null);
   const [clusterPwDialog, setClusterPwDialog] = useState<{ id: string; name: string } | null>(null);
   const [ctx, setCtx] = useState<{ x: number; y: number; h: host.Host } | null>(null);
@@ -999,6 +1001,7 @@ export default function App() {
           )}
         </div>
         <div className="sidebar-footer">
+          <button className="toolbtn" style={{ width: "100%", marginBottom: 6 }} onClick={() => setStatsOpen(true)}>MK119 리소스 수집 등록</button>
           {manualUpdate && (
             <button className="toolbtn"
               style={{
@@ -1022,6 +1025,7 @@ export default function App() {
       </aside>
 
       {/* ---- main ---- */}
+      {statsOpen && <StatsRegistration initialHost={selected?.addr || ""} onClose={() => setStatsOpen(false)} />}
       {overviewCluster ? (
         <ClusterOverview
           clusterName={overviewCluster.name}

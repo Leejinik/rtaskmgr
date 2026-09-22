@@ -6,6 +6,7 @@ import {main} from '../models';
 import {host} from '../models';
 import {record} from '../models';
 import {pwledger} from '../models';
+import {statsreg} from '../models';
 
 export function ApplyUpdate(arg1:updater.UpdateInfo):Promise<void>;
 
@@ -142,6 +143,20 @@ export function StartCapture(arg1:string,arg2:monitor.CapRequest):Promise<monito
 export function StartRecording(arg1:string):Promise<string>;
 
 export function StartScheduled(arg1:string,arg2:number,arg3:number,arg4:string):Promise<monitor.RecMeta>;
+
+export function StatsConnections():Promise<Array<statsreg.SavedConnection>>;
+
+export function StatsImportPatterns(arg1:string):Promise<statsreg.PatternEvent>;
+
+export function StatsInspect(arg1:statsreg.Config):Promise<statsreg.Plan>;
+
+export function StatsRegister(arg1:statsreg.Selection):Promise<statsreg.Result>;
+
+export function StatsRetry(arg1:statsreg.Config,arg2:string):Promise<statsreg.Result>;
+
+export function StatsSaveConnection(arg1:statsreg.SavedConnection):Promise<void>;
+
+export function StatsValidate(arg1:statsreg.Selection):Promise<void>;
 
 export function StopCapture(arg1:string,arg2:string):Promise<monitor.CapMeta>;
 

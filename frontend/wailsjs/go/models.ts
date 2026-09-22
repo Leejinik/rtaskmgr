@@ -1224,6 +1224,410 @@ export namespace record {
 
 }
 
+export namespace statsreg {
+	
+	export class Config {
+	    dbHost: string;
+	    dbPort: number;
+	    dbUser: string;
+	    dbPassword: string;
+	    redisHost: string;
+	    redisPort: number;
+	    redisUser: string;
+	    redisPassword: string;
+	    redisDB: number;
+	    brokers: string;
+	    kafkaSecurity: string;
+	    kafkaUser: string;
+	    kafkaPassword: string;
+	    kafkaHosts: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Config(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dbHost = source["dbHost"];
+	        this.dbPort = source["dbPort"];
+	        this.dbUser = source["dbUser"];
+	        this.dbPassword = source["dbPassword"];
+	        this.redisHost = source["redisHost"];
+	        this.redisPort = source["redisPort"];
+	        this.redisUser = source["redisUser"];
+	        this.redisPassword = source["redisPassword"];
+	        this.redisDB = source["redisDB"];
+	        this.brokers = source["brokers"];
+	        this.kafkaSecurity = source["kafkaSecurity"];
+	        this.kafkaUser = source["kafkaUser"];
+	        this.kafkaPassword = source["kafkaPassword"];
+	        this.kafkaHosts = source["kafkaHosts"];
+	    }
+	}
+	export class ExistingDevice {
+	    deviceId: number;
+	    interfaceId: number;
+	    name: string;
+	    host: string;
+	    points: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ExistingDevice(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.deviceId = source["deviceId"];
+	        this.interfaceId = source["interfaceId"];
+	        this.name = source["name"];
+	        this.host = source["host"];
+	        this.points = source["points"];
+	    }
+	}
+	export class ExistingGroup {
+	    groupId: number;
+	    name: string;
+	    devices: ExistingDevice[];
+	    points: number;
+	    clusterId: number;
+	    vanished: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ExistingGroup(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.groupId = source["groupId"];
+	        this.name = source["name"];
+	        this.devices = this.convertValues(source["devices"], ExistingDevice);
+	        this.points = source["points"];
+	        this.clusterId = source["clusterId"];
+	        this.vanished = source["vanished"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class KafkaRow {
+	    hostname: string;
+	    ip: string;
+	    port: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new KafkaRow(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hostname = source["hostname"];
+	        this.ip = source["ip"];
+	        this.port = source["port"];
+	    }
+	}
+	export class Option {
+	    id: number;
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Option(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	    }
+	}
+	export class PatternChange {
+	    shape: string;
+	    field: string;
+	    from: string;
+	    to: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PatternChange(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.shape = source["shape"];
+	        this.field = source["field"];
+	        this.from = source["from"];
+	        this.to = source["to"];
+	    }
+	}
+	export class PatternEvent {
+	    at: string;
+	    source: string;
+	    notes?: string[];
+	    changes: PatternChange[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PatternEvent(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.at = source["at"];
+	        this.source = source["source"];
+	        this.notes = source["notes"];
+	        this.changes = this.convertValues(source["changes"], PatternChange);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Point {
+	    key: string;
+	    name: string;
+	    host: string;
+	    templateId: number;
+	    format: number;
+	    measure: string;
+	    interval: number;
+	    warning: string;
+	    selected: boolean;
+	    remembered: boolean;
+	    registered: boolean;
+	    registeredOn: string;
+	    moved: boolean;
+	    deleted: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Point(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.name = source["name"];
+	        this.host = source["host"];
+	        this.templateId = source["templateId"];
+	        this.format = source["format"];
+	        this.measure = source["measure"];
+	        this.interval = source["interval"];
+	        this.warning = source["warning"];
+	        this.selected = source["selected"];
+	        this.remembered = source["remembered"];
+	        this.registered = source["registered"];
+	        this.registeredOn = source["registeredOn"];
+	        this.moved = source["moved"];
+	        this.deleted = source["deleted"];
+	    }
+	}
+	export class Server {
+	    hostname: string;
+	    name: string;
+	    ip: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Server(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hostname = source["hostname"];
+	        this.name = source["name"];
+	        this.ip = source["ip"];
+	    }
+	}
+	export class Plan {
+	    id: string;
+	    servers: Server[];
+	    points: Point[];
+	    explorers: Option[];
+	    clusters: Option[];
+	    groupName: string;
+	    warnings: string[];
+	    redisInfo: string;
+	    patternInfo: string;
+	    existing: ExistingGroup[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Plan(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.servers = this.convertValues(source["servers"], Server);
+	        this.points = this.convertValues(source["points"], Point);
+	        this.explorers = this.convertValues(source["explorers"], Option);
+	        this.clusters = this.convertValues(source["clusters"], Option);
+	        this.groupName = source["groupName"];
+	        this.warnings = source["warnings"];
+	        this.redisInfo = source["redisInfo"];
+	        this.patternInfo = source["patternInfo"];
+	        this.existing = this.convertValues(source["existing"], ExistingGroup);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class Result {
+	    id: string;
+	    groupId: number;
+	    deviceIds: number[];
+	    interfaceIds: number[];
+	    checkpointIds: number[];
+	    newDeviceIds: number[];
+	    update: boolean;
+	    stage: string;
+	    committed: boolean;
+	    notified: boolean;
+	    verified: boolean;
+	    collected: number;
+	    missing: number[];
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Result(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.groupId = source["groupId"];
+	        this.deviceIds = source["deviceIds"];
+	        this.interfaceIds = source["interfaceIds"];
+	        this.checkpointIds = source["checkpointIds"];
+	        this.newDeviceIds = source["newDeviceIds"];
+	        this.update = source["update"];
+	        this.stage = source["stage"];
+	        this.committed = source["committed"];
+	        this.notified = source["notified"];
+	        this.verified = source["verified"];
+	        this.collected = source["collected"];
+	        this.missing = source["missing"];
+	        this.message = source["message"];
+	    }
+	}
+	export class SavedConnection {
+	    config: Config;
+	    kafkaRows: KafkaRow[];
+	    savedAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SavedConnection(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.config = this.convertValues(source["config"], Config);
+	        this.kafkaRows = this.convertValues(source["kafkaRows"], KafkaRow);
+	        this.savedAt = source["savedAt"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Selection {
+	    planId: string;
+	    groupName: string;
+	    explorerId: number;
+	    clusterId: number;
+	    servers: Server[];
+	    points: Point[];
+	    updateGroupId: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Selection(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.planId = source["planId"];
+	        this.groupName = source["groupName"];
+	        this.explorerId = source["explorerId"];
+	        this.clusterId = source["clusterId"];
+	        this.servers = this.convertValues(source["servers"], Server);
+	        this.points = this.convertValues(source["points"], Point);
+	        this.updateGroupId = source["updateGroupId"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace updater {
 	
 	export class UpdateInfo {
