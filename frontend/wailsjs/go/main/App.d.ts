@@ -16,7 +16,7 @@ export function BundleLogCollect(arg1:string):Promise<string>;
 
 export function CancelCaptureDownload(arg1:string,arg2:string):Promise<void>;
 
-export function CancelLogCollect():Promise<void>;
+export function CancelLogCollect():Promise<number>;
 
 export function CaptureEnv(arg1:string):Promise<monitor.CapEnv>;
 

@@ -131,6 +131,7 @@ export default function App() {
   // be able to switch back to the process list while it happens.
   const [lcRunning, setLcRunning] = useState(false);
   const [lcProgress, setLcProgress] = useState<Record<string, LogCollectProgress>>({});
+  const [lcCancelling, setLcCancelling] = useState(false);
   const [lcResult, setLcResult] = useState<main.LogCollectResult | null>(null);
   // Managed-account (liz/root) password expiry, keyed by host id. Seeded from the
   // persisted host cache and refreshed live via the "pwstatus" event on connect.
@@ -353,7 +354,7 @@ export default function App() {
         ...prev,
         [s.hostId]: {
           stage: s.stage || "", done: s.done ?? 0, total: s.total ?? 0,
-          pct: s.pct ?? 0, err: s.err || "",
+          pct: s.pct ?? 0, err: s.err || "", canceled: !!s.canceled,
         },
       }));
     });
@@ -383,6 +384,7 @@ export default function App() {
     if (!dir) return;
     setLcProgress({});
     setLcResult(null);
+    setLcCancelling(false);
     setLcRunning(true);
     try {
       const res = await CollectLogs(
@@ -398,13 +400,16 @@ export default function App() {
       );
       setLcResult(res);
       const failed = res?.failed ?? 0;
-      showToast(failed > 0
-        ? `로그 수집 — 성공 ${res.ok}대, 실패 ${failed}대 (${res.dir})`
+      const canceled = res?.canceled ?? 0;
+      showToast(failed + canceled > 0
+        ? `로그 수집 — 성공 ${res.ok}대` + (canceled > 0 ? `, 취소 ${canceled}대` : "")
+          + (failed > 0 ? `, 실패 ${failed}대` : "") + ` (${res.dir})`
         : `로그 수집 완료 — ${res.ok}대 (${res.dir})`);
     } catch (e: any) {
       showToast(`로그 수집 실패 — ${String(e?.message ?? e)}`);
     } finally {
       setLcRunning(false);
+      setLcCancelling(false);
     }
   }
 
@@ -1049,7 +1054,18 @@ export default function App() {
             progress: lcProgress,
             result: lcResult,
             onStart: startLogCollect,
-            onCancel: () => { CancelLogCollect(); showToast("로그 다운로드를 취소했습니다 (서버의 아카이브는 남습니다)"); },
+            cancelling: lcCancelling,
+            // 취소는 요청이다. 실제로 멈춘 결과는 서버별로 결과 줄에 나온다 — 여기서
+            // 「취소했습니다」라고 단정하면, 이미 검증·정리 중이라 끝까지 간 서버에 대해
+            // 거짓말이 된다.
+            onCancel: async () => {
+              if (lcCancelling) return;
+              setLcCancelling(true);
+              const n = await CancelLogCollect().catch(() => 0);
+              showToast(n > 0
+                ? `취소를 요청했습니다 — ${n}대. 다운로드 전이면 서버 사본을 지우고, 다운로드 중이면 서버에 압축본을 남깁니다`
+                : "취소할 단계가 남아 있지 않습니다 — 검증·정리 중이라 곧 끝납니다");
+            },
             onOpenFolder: () => { if (lcResult?.dir) OpenLogCollectFolder(lcResult.dir); },
             onBundle: bundleLogCollect,
             onClearResult: () => { setLcResult(null); setLcProgress({}); },

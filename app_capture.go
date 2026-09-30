@@ -56,12 +56,15 @@ func (d *capDownloads) cancel(key string) bool {
 	return false
 }
 
-func (d *capDownloads) cancelAll() {
+// cancelAll cancels every registered transfer and reports how many there were, so a
+// caller can tell "cancelled" apart from "there was nothing left to cancel".
+func (d *capDownloads) cancelAll() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, c := range d.m {
 		c()
 	}
+	return len(d.m)
 }
 
 func (d *capDownloads) busy() bool {

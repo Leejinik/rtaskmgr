@@ -111,6 +111,7 @@ export namespace main {
 	    files: number;
 	    cleaned: boolean;
 	    err?: string;
+	    canceled?: boolean;
 	    leftOnHost?: string;
 	    collectId?: string;
 	    target?: string;
@@ -129,6 +130,7 @@ export namespace main {
 	        this.files = source["files"];
 	        this.cleaned = source["cleaned"];
 	        this.err = source["err"];
+	        this.canceled = source["canceled"];
 	        this.leftOnHost = source["leftOnHost"];
 	        this.collectId = source["collectId"];
 	        this.target = source["target"];
@@ -139,6 +141,7 @@ export namespace main {
 	    hosts: LogCollectHostResult[];
 	    ok: number;
 	    failed: number;
+	    canceled: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new LogCollectResult(source);
@@ -150,6 +153,7 @@ export namespace main {
 	        this.hosts = this.convertValues(source["hosts"], LogCollectHostResult);
 	        this.ok = source["ok"];
 	        this.failed = source["failed"];
+	        this.canceled = source["canceled"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

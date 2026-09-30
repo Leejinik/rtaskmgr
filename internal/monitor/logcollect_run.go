@@ -27,6 +27,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -704,6 +705,10 @@ while IFS= read -r -d '' -u 9 idx \
    && IFS= read -r -d '' -u 9 dst \
    && IFS= read -r -d '' -u 9 dstcut \
    && IFS= read -r -d '' -u 9 extra; do
+  # 취소: 앱이 STOP 파일을 놓으면 다음 파일로 넘어가지 않는다. 원격 프로세스를 죽이는
+  # 대신 파일 경계에서 스스로 멈추게 해, 반쯤 쓰인 사본 없이 정리할 수 있게 한다.
+  # DONE|copy 를 찍지 않으므로 Go 쪽은 복사 미완료로 보고 스테이징을 회수한다.
+  [ -e "$CTL/STOP" ] && { echo 'STOPPED|copy'; exit 0; }
   case $mode in
   whole)
     $NI cp -p -- "$src" "$dst" 2>"$CTL/err"; rc=$?
@@ -1168,12 +1173,22 @@ func joinReasons(rs []string) string {
 	return " (" + strings.Join(rs, ", ") + ")"
 }
 
+// ErrLogCollectCanceled is returned when the operator cancelled a collection before
+// its archive reached the download step. By then nothing has been handed to the PC,
+// so the server copies are removed rather than kept as a leftover.
+var ErrLogCollectCanceled = errors.New("취소했습니다")
+
 // StartLogCollect runs the host-side half: stage, copy, manifest, archive.
+//
+// ctx is the operator's cancel. It is honoured at every step boundary and, during the
+// copy — the long step — by dropping a STOP file the copy script checks between
+// files. The archive step (one tar|gzip) is not interrupted; a cancel that lands
+// during it takes effect when it finishes, and the archive is removed with the rest.
 //
 // It re-plans rather than trusting the plan the UI is showing. Time has passed since
 // the preview — files rotate, a partition fills — and the disk gate is only
 // meaningful if it is evaluated against the state the copy will actually meet.
-func (m *Manager) StartLogCollect(hostID string, req LogRequest, cat LogCatalog,
+func (m *Manager) StartLogCollect(ctx context.Context, hostID string, req LogRequest, cat LogCatalog,
 	progress func(stage string, done, total int64)) (LogJob, error) {
 
 	s := m.get(hostID)
@@ -1189,6 +1204,9 @@ func (m *Manager) StartLogCollect(hostID string, req LogRequest, cat LogCatalog,
 	plan, err := m.LogPlanFor(hostID, req, cat)
 	if err != nil {
 		return LogJob{}, err
+	}
+	if ctx.Err() != nil {
+		return LogJob{}, ErrLogCollectCanceled
 	}
 	if !plan.OK {
 		reason := plan.Reason
@@ -1248,6 +1266,9 @@ func (m *Manager) StartLogCollect(hostID string, req LogRequest, cat LogCatalog,
 		return abandon(fmt.Errorf("작업 목록을 올리지 못했습니다: %w", err))
 	}
 
+	if ctx.Err() != nil {
+		return abandon(ErrLogCollectCanceled)
+	}
 	step(LogStageCopy, 0, int64(plan.Files))
 	chownUID := -1
 	copyOut := ""
@@ -1261,6 +1282,17 @@ func (m *Manager) StartLogCollect(hostID string, req LogRequest, cat LogCatalog,
 	// renderer with work nobody can read.
 	copied := 0
 	lastTick := time.Now()
+	copyDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			// As the login user: the control directory is ours (0700), and a root copy
+			// can still see the file. A failure here only means the copy runs to the end
+			// and the cancel is honoured at the next boundary instead.
+			_, _ = m.plainRun(s, "touch -- "+shellQuote(stageRoot+"/"+logCtlDir+"/STOP"))
+		case <-copyDone:
+		}
+	}()
 	copyOut, _ = m.streamRun(s, script, s.elevated, func(line string) {
 		if !strings.HasPrefix(line, "P|") {
 			return
@@ -1271,7 +1303,11 @@ func (m *Manager) StartLogCollect(hostID string, req LogRequest, cat LogCatalog,
 			step(LogStageCopy, int64(copied), int64(plan.Files))
 		}
 	})
+	close(copyDone)
 	step(LogStageCopy, int64(copied), int64(plan.Files))
+	if ctx.Err() != nil {
+		return abandon(ErrLogCollectCanceled)
+	}
 	if !strings.Contains(copyOut, "DONE|copy") {
 		// The copy died part-way — a dropped channel, a rotated sudo password, the app
 		// restarting — with up to the whole selection already on disk.
@@ -1295,6 +1331,9 @@ func (m *Manager) StartLogCollect(hostID string, req LogRequest, cat LogCatalog,
 		return abandon(fmt.Errorf("매니페스트를 올리지 못했습니다: %w", err))
 	}
 
+	if ctx.Err() != nil {
+		return abandon(ErrLogCollectCanceled)
+	}
 	step(LogStageArchive, 0, 0)
 	job.Stage = LogStageArchive
 	arcOut, _ := m.plainRun(s, logArchiveScript(s, stageRoot, archive))
@@ -1306,6 +1345,11 @@ func (m *Manager) StartLogCollect(hostID string, req LogRequest, cat LogCatalog,
 		// handed something to clean up with.
 		job.Leftover = stageRoot
 		return job, aerr
+	}
+	if ctx.Err() != nil {
+		// Cancelled while tar|gzip ran. The archive is complete but nothing has been
+		// downloaded, so it goes with the staging tree rather than into leftovers.
+		return abandon(ErrLogCollectCanceled)
 	}
 	job.ArchiveBytes = sz
 	job.Stage = LogStageDownload

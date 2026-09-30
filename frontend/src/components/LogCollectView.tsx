@@ -26,6 +26,7 @@ export interface LogCollectProgress {
   total: number;
   pct: number;
   err: string;
+  canceled?: boolean;
 }
 
 export interface LogCollectTaskReq {
@@ -46,6 +47,7 @@ interface Props {
   // The run is owned by App so it survives leaving this view — gigabytes take
   // minutes and the operator should be able to go look at a process list.
   running: boolean;
+  cancelling: boolean;
   progress: Record<string, LogCollectProgress>;
   result: any | null;
   onStart: (tasks: LogCollectTaskReq[]) => void;
@@ -135,7 +137,7 @@ const midnight = (d: Date) =>
   new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).getTime();
 
 export default function LogCollectView({
-  clusterId, hosts, connected, running, progress, result,
+  clusterId, hosts, connected, running, cancelling, progress, result,
   onStart, onCancel, onOpenFolder, onBundle, onClearResult, onRedownload,
 }: Props) {
   const [surveys, setSurveys] = useState<monitor.LogSurvey[]>([]);
@@ -244,6 +246,13 @@ export default function LogCollectView({
       if (alive.current) setLeftovers(res ?? []);
     } catch { /* 조용히 */ }
   }
+
+  // 수집이 끝나면(취소·실패 포함) 잔재 목록을 바로 다시 읽는다. 다운로드 중 취소나
+  // 실패는 서버에 압축본을 남기는데, 다음 연결 때까지 목록에 안 보이면 운영자는 그것이
+  // 남았는지 알 길이 없다.
+  useEffect(() => {
+    if (result) loadLeftovers();
+  }, [result]);
 
   // 연결 구성이 바뀌면 자동으로 한 번 조사하되, ‘모두 연결’처럼 호스트가 연달아 붙는
   // 동안 N번 발사되지 않도록 잠깐 기다렸다 마지막 상태로만 돈다. 기간 변경은 재조사
@@ -506,7 +515,8 @@ export default function LogCollectView({
                       <span className="lc-host-name">{r.name}</span>
                       <span className="lc-dim">{hosts.find((h) => h.id === r.hostId)?.addr}</span>
                       <span style={{ flex: 1 }} />
-                      {p && <span className={"lc-stage" + (p.err ? " lc-bad" : "")}>{p.err ? "실패" : stageLabel(p)}</span>}
+                      {p && <span className={"lc-stage" + (p.err && !p.canceled ? " lc-bad" : "")}>
+                        {p.canceled ? "취소됨" : p.err ? "실패" : stageLabel(p)}</span>}
                       <span className="lc-dim">{fmtBytes(hBytes)}</span>
                     </div>
                     {!hCollapsed && (
@@ -591,7 +601,9 @@ export default function LogCollectView({
             {runningRows.map(([hid, p]) => (
               <div className={"lc-prog-row" + (p.err ? " lc-bad" : "")} key={hid}>
                 <span className="lc-srv-name">{hosts.find((h) => h.id === hid)?.name ?? hid}</span>
-                <span className={p.err ? "lc-bad" : "lc-stage"}>{p.err ? "실패" : stageLabel(p)}</span>
+                <span className={p.err && !p.canceled ? "lc-bad" : "lc-stage"}>
+                  {p.canceled ? "취소됨" : p.err ? "실패" : stageLabel(p)}
+                </span>
                 {/* 총량을 아는 단계(복사·다운로드)만 퍼센트를 보여준다. 압축·검증·정리는
                     얼마나 남았는지 알 방법이 없으므로 0%에 멈춘 막대 대신 움직이는
                     막대를 둔다 — 멈춘 막대는 "죽었다"로 읽힌다. */}
@@ -659,7 +671,10 @@ export default function LogCollectView({
             </>
           )}
           {running ? (
-            <button className="toolbtn danger" onClick={onCancel}>다운로드 취소</button>
+            <button className="toolbtn danger" onClick={onCancel} disabled={cancelling}
+              title="다운로드 전이면 서버 사본을 지우고 멈춥니다. 다운로드 중이면 서버에 압축본을 남깁니다(아래 잔재 목록). 검증·정리 중인 서버는 끝까지 갑니다">
+              {cancelling ? "취소 중…" : "수집 취소"}
+            </button>
           ) : (
             <button className="toolbtn primary" disabled={startable.length === 0}
               onClick={() => onStart(buildTasks())}
@@ -672,10 +687,10 @@ export default function LogCollectView({
           <div className="lc-result">
             <div>
               저장 위치 <span className="lc-mono">{result.dir}</span>
-              {" · "}성공 {result.ok}대{result.failed > 0 && ` · 실패 ${result.failed}대`}
+              {" · "}성공 {result.ok}대{result.canceled > 0 && ` · 취소 ${result.canceled}대`}{result.failed > 0 && ` · 실패 ${result.failed}대`}
             </div>
             {(result.hosts ?? []).map((r: any) => (
-              <div className={"lc-result-row" + (r.err ? " lc-bad" : "")} key={r.hostId}>
+              <div className={"lc-result-row" + (r.err && !r.canceled ? " lc-bad" : "")} key={r.hostId}>
                 <span className="lc-srv-name">{r.name}</span>
                 {r.err ? (
                   <span>{r.err}</span>

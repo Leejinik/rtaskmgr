@@ -40,6 +40,10 @@ type App struct {
 	pcapLocal *store.PcapLocal
 	capDL     capDownloads
 	logDL     capDownloads
+	// logRun is held for the whole of one CollectLogs call. logDL alone cannot guard
+	// against a second collection: a host is only in it while cancellable, so a run
+	// whose hosts were all still copying used to look idle.
+	logRun sync.Mutex
 
 	// version is set from main() after NewApp(); the updater is built in
 	// startup() once the config dir is known. Empty version → "dev" → updater off.

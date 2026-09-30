@@ -19,6 +19,7 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -51,6 +52,9 @@ type LogCollectHostResult struct {
 	Files     int    `json:"files"`
 	Cleaned   bool   `json:"cleaned"`
 	Err       string `json:"err,omitempty"`
+	// Canceled is set when the operator's cancel stopped this host. Err then says
+	// what became of the server copies (removed, or left as a leftover).
+	Canceled bool `json:"canceled,omitempty"`
 	// LeftOnHost names an archive still occupying space on the server because the
 	// download or the verification did not finish. It is surfaced rather than
 	// swallowed: this is the way the feature could quietly eat a data partition.
@@ -63,8 +67,9 @@ type LogCollectHostResult struct {
 type LogCollectResult struct {
 	Dir    string                 `json:"dir"`
 	Hosts  []LogCollectHostResult `json:"hosts"`
-	OK     int                    `json:"ok"`
-	Failed int                    `json:"failed"`
+	OK       int                    `json:"ok"`
+	Failed   int                    `json:"failed"`
+	Canceled int                    `json:"canceled"`
 }
 
 // ---- catalog ------------------------------------------------------------
@@ -208,9 +213,10 @@ func (a *App) CollectLogs(tasks []LogCollectTask, dir string) (LogCollectResult,
 	if dir == "" {
 		return LogCollectResult{}, fmt.Errorf("저장할 폴더가 없습니다")
 	}
-	if a.logDL.busy() {
+	if a.logDL.busy() || !a.logRun.TryLock() {
 		return LogCollectResult{}, fmt.Errorf("이미 로그 수집이 진행 중입니다. 완료 후 다시 시도하세요")
 	}
+	defer a.logRun.Unlock()
 	// One host may only appear once. Two goroutines collecting the same server would
 	// race for the same local filename and each verify a file the other had already
 	// replaced — and the loser's archive would then be deleted from the server after
@@ -262,9 +268,12 @@ func (a *App) CollectLogs(tasks []LogCollectTask, dir string) (LogCollectResult,
 	wg.Wait()
 
 	for _, h := range res.Hosts {
-		if h.Err == "" {
+		switch {
+		case h.Canceled:
+			res.Canceled++
+		case h.Err == "":
 			res.OK++
-		} else {
+		default:
 			res.Failed++
 		}
 	}
@@ -289,13 +298,36 @@ func (a *App) collectOneHost(t LogCollectTask, outDir, stamp string) LogCollectH
 		wruntime.EventsEmit(a.ctx, "logCollect", map[string]interface{}{
 			"hostId": t.HostID, "name": out.Name, "stage": stage,
 			"done": done, "total": total, "pct": pct, "err": errMsg,
+			"canceled": out.Canceled,
 		})
 	}
 
-	job, err := a.mgr.StartLogCollect(t.HostID, req, a.LogCollectCatalog(),
+	// The cancel covers the host from its first step, not only the download: a cancel
+	// pressed during the copy used to find nothing registered, do nothing, and still
+	// be reported as done. It is released once the archive is on this PC — from there
+	// on only verification and cleanup remain, and cutting those short would only
+	// leave debris behind.
+	key := t.HostID + "/" + stamp
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.logDL.add(key, cancel)
+	release := func() { a.logDL.done(key); cancel() }
+	defer release()
+
+	job, err := a.mgr.StartLogCollect(ctx, t.HostID, req, a.LogCollectCatalog(),
 		func(stage string, done, total int64) { emit(stage, done, total, "") })
 	out.ServerDir, out.CollectID, out.Target = job.ServerDir, job.ID, job.Target
 	out.Files = job.Files
+	if errors.Is(err, monitor.ErrLogCollectCanceled) {
+		out.Canceled = true
+		out.LeftOnHost = job.Leftover
+		if job.Leftover != "" {
+			out.Err = "취소했습니다 — " + err.Error()
+		} else {
+			out.Err = "취소했습니다 — 서버 사본을 지웠습니다"
+		}
+		emit(job.Stage, 0, 0, out.Err)
+		return out
+	}
 	if err != nil {
 		out.Err = err.Error()
 		// StartLogCollect takes its own staging tree back when it fails before the
@@ -320,19 +352,15 @@ func (a *App) collectOneHost(t LogCollectTask, outDir, stamp string) LogCollectH
 		emit(monitor.LogStageDownload, 0, job.ArchiveBytes, out.Err)
 		return out
 	}
-	key := t.HostID + "/" + job.ID
-	ctx, cancel := context.WithCancel(a.ctx)
-	a.logDL.add(key, cancel)
-	defer func() {
-		a.logDL.done(key)
-		cancel()
-	}()
-
 	emit(monitor.LogStageDownload, 0, job.ArchiveBytes, "")
 	n, err := a.mgr.DownloadLogArchiveTo(ctx, t.HostID, job.ID, job.Target, local,
 		func(copied, total int64) { emit(monitor.LogStageDownload, copied, total, "") })
 	if err != nil {
 		out.Err = err.Error()
+		if ctx.Err() != nil {
+			out.Canceled = true
+			out.Err = "다운로드를 취소했습니다 — 서버에 압축본이 남아 있습니다 (아래 ‘이전 수집 잔재’에서 다시 받거나 지울 수 있습니다)"
+		}
 		// The archive is still on the host. That is deliberate — it is what makes a
 		// failed transfer retryable instead of a collection that has to be redone.
 		out.LeftOnHost = job.Archive
@@ -347,6 +375,7 @@ func (a *App) collectOneHost(t LogCollectTask, outDir, stamp string) LogCollectH
 		return out
 	}
 	out.Path, out.Bytes = local, n
+	release() // 아카이브가 이 PC 에 왔다. 검증·정리는 끝까지 간다.
 
 	emit(monitor.LogStageVerify, 0, 0, "")
 	if err := monitor.VerifyLogArchive(local, job.ServerDir, job.Entries); err != nil {
@@ -370,9 +399,11 @@ func (a *App) collectOneHost(t LogCollectTask, outDir, stamp string) LogCollectH
 	return out
 }
 
-// CancelLogCollect aborts in-flight transfers. What is already on the host stays
-// there and appears in the leftovers section.
-func (a *App) CancelLogCollect() { a.logDL.cancelAll() }
+// CancelLogCollect asks every host still in a cancellable step to stop, and returns
+// how many there were. Before the download a host removes its server copies; during
+// the download the archive stays on the host and appears in the leftovers section.
+// Hosts already verifying or cleaning up are not counted — they are finishing.
+func (a *App) CancelLogCollect() int { return a.logDL.cancelAll() }
 
 // ---- leftovers ----------------------------------------------------------
 

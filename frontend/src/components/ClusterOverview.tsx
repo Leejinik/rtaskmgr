@@ -32,6 +32,7 @@ interface Props {
   logCollect: {
     running: boolean;
     progress: Record<string, LogCollectProgress>;
+    cancelling: boolean;
     result: any | null;
     onStart: (tasks: LogCollectTaskReq[]) => void;
     onCancel: () => void;
@@ -463,6 +464,7 @@ export default function ClusterOverview({
           onCancel={logCollect.onCancel}
           onOpenFolder={logCollect.onOpenFolder}
           onBundle={logCollect.onBundle}
+          cancelling={logCollect.cancelling}
           onClearResult={logCollect.onClearResult}
           onRedownload={logCollect.onRedownload}
         />
