@@ -106,6 +106,22 @@ export function ForgetCapture(arg1, arg2) {
   return window['go']['main']['App']['ForgetCapture'](arg1, arg2);
 }
 
+export function GcTrendChart(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GcTrendChart'](arg1, arg2, arg3);
+}
+
+export function GcTrendFetch(arg1) {
+  return window['go']['main']['App']['GcTrendFetch'](arg1);
+}
+
+export function GcTrendLoad(arg1) {
+  return window['go']['main']['App']['GcTrendLoad'](arg1);
+}
+
+export function GcTrendOpenFolder() {
+  return window['go']['main']['App']['GcTrendOpenFolder']();
+}
+
 export function GetCurrentVersion() {
   return window['go']['main']['App']['GetCurrentVersion']();
 }

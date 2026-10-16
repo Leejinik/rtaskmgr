@@ -5,6 +5,7 @@ import { pct, bytesRate, mib } from "../format";
 import Sparkline from "./Sparkline";
 import ContextMenu from "./ContextMenu";
 import LogCollectView, { LogCollectProgress, LogCollectTaskReq } from "./LogCollectView";
+import GcTrendView from "./GcTrendView";
 
 const REFRESH_OPTS = [1, 2, 3, 5, 10, 15, 20, 30, 60];
 
@@ -31,8 +32,8 @@ interface Props {
   clusterId: string;
   logCollect: {
     running: boolean;
-    progress: Record<string, LogCollectProgress>;
     cancelling: boolean;
+    progress: Record<string, LogCollectProgress>;
     result: any | null;
     onStart: (tasks: LogCollectTaskReq[]) => void;
     onCancel: () => void;
@@ -302,7 +303,7 @@ export default function ClusterOverview({
   capturing, clusterId, logCollect,
 }: Props) {
   const connectedCount = hosts.filter((h) => status[h.id]?.state === "streaming").length;
-  const [mode, setMode] = useState<"summary" | "proc" | "logs">("summary");
+  const [mode, setMode] = useState<"summary" | "proc" | "logs" | "gc">("summary");
   const [hideKthreads, setHideKthreads] = useState(true);
   const [page, setPage] = useState(0);
   const [sort, setSort] = useState<Sort>({ key: "cpu", dir: -1 });
@@ -387,6 +388,11 @@ export default function ClusterOverview({
             title="여러 서버의 로그를 한 번에 모아 압축·다운로드합니다">
             🗂 로그 수집{logCollect.running ? " ●" : ""}
           </button>
+          <button className={"toolbtn" + (mode === "gc" ? " primary" : "")}
+            onClick={() => setMode("gc")}
+            title="GC 로그로 JVM 힙의 GC 후 바닥선 추세를 보고 메모리 누수 의심 모듈을 찾습니다 (읽기 전용)">
+            🧪 메모리 추세
+          </button>
         </div>
         <button className="toolbtn primary" onClick={onConnectAll}>모두 연결</button>
         <button className="toolbtn" onClick={onDisconnectAll}>모두 해제</button>
@@ -458,15 +464,23 @@ export default function ClusterOverview({
           hosts={hosts}
           connected={Object.fromEntries(hosts.map((h) => [h.id, status[h.id]?.state === "streaming"]))}
           running={logCollect.running}
+          cancelling={logCollect.cancelling}
           progress={logCollect.progress}
           result={logCollect.result}
           onStart={logCollect.onStart}
           onCancel={logCollect.onCancel}
           onOpenFolder={logCollect.onOpenFolder}
           onBundle={logCollect.onBundle}
-          cancelling={logCollect.cancelling}
           onClearResult={logCollect.onClearResult}
           onRedownload={logCollect.onRedownload}
+        />
+      )}
+
+      {mode === "gc" && (
+        <GcTrendView
+          key={clusterId}
+          hosts={hosts}
+          connected={Object.fromEntries(hosts.map((h) => [h.id, status[h.id]?.state === "streaming"]))}
         />
       )}
 

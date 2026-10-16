@@ -1,3 +1,141 @@
+export namespace gclog {
+	
+	export class Analysis {
+	    verdict: string;
+	    headline: string;
+	    method: string;
+	    slopeMBh: number;
+	    riseMB: number;
+	    floorFromMB: number;
+	    floorToMB: number;
+	    rho: number;
+	    fromMs: number;
+	    toMs: number;
+	    warmupMin: number;
+	    spanH: number;
+	    points: number;
+	    reclaims: number;
+	    fullGCs: number;
+	    exhausted: number;
+	    maxPauseMs: number;
+	    gcTimePct: number;
+	    capMB: number;
+	    maxHeapMB: number;
+	    hoursToMax: number;
+	    notes: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Analysis(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.verdict = source["verdict"];
+	        this.headline = source["headline"];
+	        this.method = source["method"];
+	        this.slopeMBh = source["slopeMBh"];
+	        this.riseMB = source["riseMB"];
+	        this.floorFromMB = source["floorFromMB"];
+	        this.floorToMB = source["floorToMB"];
+	        this.rho = source["rho"];
+	        this.fromMs = source["fromMs"];
+	        this.toMs = source["toMs"];
+	        this.warmupMin = source["warmupMin"];
+	        this.spanH = source["spanH"];
+	        this.points = source["points"];
+	        this.reclaims = source["reclaims"];
+	        this.fullGCs = source["fullGCs"];
+	        this.exhausted = source["exhausted"];
+	        this.maxPauseMs = source["maxPauseMs"];
+	        this.gcTimePct = source["gcTimePct"];
+	        this.capMB = source["capMB"];
+	        this.maxHeapMB = source["maxHeapMB"];
+	        this.hoursToMax = source["hoursToMax"];
+	        this.notes = source["notes"];
+	    }
+	}
+	export class Point {
+	    t: number;
+	    mb: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Point(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.t = source["t"];
+	        this.mb = source["mb"];
+	    }
+	}
+	export class Run {
+	    startMs: number;
+	    fromMs: number;
+	    toMs: number;
+	    events: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Run(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.startMs = source["startMs"];
+	        this.fromMs = source["fromMs"];
+	        this.toMs = source["toMs"];
+	        this.events = source["events"];
+	    }
+	}
+	export class Chart {
+	    run: Run;
+	    after: Point[];
+	    cap: Point[];
+	    floor: Point[];
+	    reclaims: Point[];
+	    fitFrom: Point;
+	    fitTo: Point;
+	    warmupToMs: number;
+	    maxHeapMB: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Chart(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.run = this.convertValues(source["run"], Run);
+	        this.after = this.convertValues(source["after"], Point);
+	        this.cap = this.convertValues(source["cap"], Point);
+	        this.floor = this.convertValues(source["floor"], Point);
+	        this.reclaims = this.convertValues(source["reclaims"], Point);
+	        this.fitFrom = this.convertValues(source["fitFrom"], Point);
+	        this.fitTo = this.convertValues(source["fitTo"], Point);
+	        this.warmupToMs = source["warmupToMs"];
+	        this.maxHeapMB = source["maxHeapMB"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+
+}
+
 export namespace host {
 	
 	export class Host {
@@ -102,6 +240,161 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class GcChartResult {
+	    chart: gclog.Chart;
+	    analysis: gclog.Analysis;
+	
+	    static createFrom(source: any = {}) {
+	        return new GcChartResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.chart = this.convertValues(source["chart"], gclog.Chart);
+	        this.analysis = this.convertValues(source["analysis"], gclog.Analysis);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ProcTrend {
+	    samples: number;
+	    spanH: number;
+	    rssFromMB: number;
+	    threadFrom: number;
+	    fdFrom: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProcTrend(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.samples = source["samples"];
+	        this.spanH = source["spanH"];
+	        this.rssFromMB = source["rssFromMB"];
+	        this.threadFrom = source["threadFrom"];
+	        this.fdFrom = source["fdFrom"];
+	    }
+	}
+	export class GcModuleReport {
+	    key: string;
+	    name: string;
+	    user: string;
+	    pid: number;
+	    running: boolean;
+	    gcLog: string;
+	    err: string;
+	    upSec: number;
+	    rssMB: number;
+	    threads: number;
+	    fds: number;
+	    proc: ProcTrend;
+	    added: number;
+	    archives: number;
+	    archivesRead: number;
+	    archived: number;
+	    runs: gclog.Run[];
+	    analysis: gclog.Analysis;
+	
+	    static createFrom(source: any = {}) {
+	        return new GcModuleReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.name = source["name"];
+	        this.user = source["user"];
+	        this.pid = source["pid"];
+	        this.running = source["running"];
+	        this.gcLog = source["gcLog"];
+	        this.err = source["err"];
+	        this.upSec = source["upSec"];
+	        this.rssMB = source["rssMB"];
+	        this.threads = source["threads"];
+	        this.fds = source["fds"];
+	        this.proc = this.convertValues(source["proc"], ProcTrend);
+	        this.added = source["added"];
+	        this.archives = source["archives"];
+	        this.archivesRead = source["archivesRead"];
+	        this.archived = source["archived"];
+	        this.runs = this.convertValues(source["runs"], gclog.Run);
+	        this.analysis = this.convertValues(source["analysis"], gclog.Analysis);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class GcHostReport {
+	    hostId: string;
+	    hostName: string;
+	    err: string;
+	    fetchedAt: number;
+	    modules: GcModuleReport[];
+	
+	    static createFrom(source: any = {}) {
+	        return new GcHostReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hostId = source["hostId"];
+	        this.hostName = source["hostName"];
+	        this.err = source["err"];
+	        this.fetchedAt = source["fetchedAt"];
+	        this.modules = this.convertValues(source["modules"], GcModuleReport);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class LogCollectHostResult {
 	    hostId: string;
 	    name: string;
@@ -509,6 +802,7 @@ export namespace monitor {
 	        this.stageDir = source["stageDir"];
 	    }
 	}
+	
 	export class DiskStat {
 	    mount: string;
 	    dev: string;
@@ -1427,6 +1721,11 @@ export namespace statsreg {
 	    registeredOn: string;
 	    moved: boolean;
 	    deleted: boolean;
+	    checkpointId: number;
+	    fromInterfaceId: number;
+	    moveGroupId: number;
+	    move: boolean;
+	    badValue: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Point(source);
@@ -1448,6 +1747,11 @@ export namespace statsreg {
 	        this.registeredOn = source["registeredOn"];
 	        this.moved = source["moved"];
 	        this.deleted = source["deleted"];
+	        this.checkpointId = source["checkpointId"];
+	        this.fromInterfaceId = source["fromInterfaceId"];
+	        this.moveGroupId = source["moveGroupId"];
+	        this.move = source["move"];
+	        this.badValue = source["badValue"];
 	    }
 	}
 	export class Server {
@@ -1521,6 +1825,7 @@ export namespace statsreg {
 	    deviceIds: number[];
 	    interfaceIds: number[];
 	    checkpointIds: number[];
+	    movedIds: number[];
 	    newDeviceIds: number[];
 	    update: boolean;
 	    stage: string;
@@ -1542,6 +1847,7 @@ export namespace statsreg {
 	        this.deviceIds = source["deviceIds"];
 	        this.interfaceIds = source["interfaceIds"];
 	        this.checkpointIds = source["checkpointIds"];
+	        this.movedIds = source["movedIds"];
 	        this.newDeviceIds = source["newDeviceIds"];
 	        this.update = source["update"];
 	        this.stage = source["stage"];
