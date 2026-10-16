@@ -18,6 +18,10 @@ export function CancelCaptureDownload(arg1:string,arg2:string):Promise<void>;
 
 export function CancelLogCollect():Promise<number>;
 
+export function CapacityLast(arg1:Array<string>):Promise<Array<main.CapacityHostReport>>;
+
+export function CapacityRun(arg1:Array<string>,arg2:monitor.CapacityOptions):Promise<Array<main.CapacityHostReport>>;
+
 export function CaptureEnv(arg1:string):Promise<monitor.CapEnv>;
 
 export function CaptureSHA256(arg1:string,arg2:string):Promise<string>;

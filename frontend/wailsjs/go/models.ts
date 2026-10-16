@@ -206,6 +206,42 @@ export namespace host {
 
 export namespace main {
 	
+	export class CapacityHostReport {
+	    hostId: string;
+	    hostName: string;
+	    err: string;
+	    result: monitor.CapacityResult;
+	
+	    static createFrom(source: any = {}) {
+	        return new CapacityHostReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hostId = source["hostId"];
+	        this.hostName = source["hostName"];
+	        this.err = source["err"];
+	        this.result = this.convertValues(source["result"], monitor.CapacityResult);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ClusterConnectResult {
 	    hostId: string;
 	    caps: monitor.Capabilities;
@@ -802,7 +838,249 @@ export namespace monitor {
 	        this.stageDir = source["stageDir"];
 	    }
 	}
+	export class CapacityKafkaPart {
+	    part: string;
+	    rate: number;
+	    pct: number;
+	    leader: string;
+	    isr: string;
+	    isrOk: boolean;
+	    verdict: string;
 	
+	    static createFrom(source: any = {}) {
+	        return new CapacityKafkaPart(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.part = source["part"];
+	        this.rate = source["rate"];
+	        this.pct = source["pct"];
+	        this.leader = source["leader"];
+	        this.isr = source["isr"];
+	        this.isrOk = source["isrOk"];
+	        this.verdict = source["verdict"];
+	    }
+	}
+	export class CapacityKafkaThread {
+	    label: string;
+	    busy: number;
+	    total: number;
+	    max: number;
+	    avg: number;
+	    sum: number;
+	    verdict: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CapacityKafkaThread(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.label = source["label"];
+	        this.busy = source["busy"];
+	        this.total = source["total"];
+	        this.max = source["max"];
+	        this.avg = source["avg"];
+	        this.sum = source["sum"];
+	        this.verdict = source["verdict"];
+	    }
+	}
+	export class CapacityKafka {
+	    at: string;
+	    pid: number;
+	    netThreads: string;
+	    ioThreads: string;
+	    heap: string;
+	    cores: number;
+	    mode: string;
+	    jstackMs: number;
+	    why: string;
+	    threads: CapacityKafkaThread[];
+	    brokerCpu: number;
+	    gcPct: number;
+	    hasGc: boolean;
+	    parts: CapacityKafkaPart[];
+	    topicTotal: number;
+	    partLimit: number;
+	    topic: string;
+	    warnings: string[];
+	    err: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CapacityKafka(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.at = source["at"];
+	        this.pid = source["pid"];
+	        this.netThreads = source["netThreads"];
+	        this.ioThreads = source["ioThreads"];
+	        this.heap = source["heap"];
+	        this.cores = source["cores"];
+	        this.mode = source["mode"];
+	        this.jstackMs = source["jstackMs"];
+	        this.why = source["why"];
+	        this.threads = this.convertValues(source["threads"], CapacityKafkaThread);
+	        this.brokerCpu = source["brokerCpu"];
+	        this.gcPct = source["gcPct"];
+	        this.hasGc = source["hasGc"];
+	        this.parts = this.convertValues(source["parts"], CapacityKafkaPart);
+	        this.topicTotal = source["topicTotal"];
+	        this.partLimit = source["partLimit"];
+	        this.topic = source["topic"];
+	        this.warnings = source["warnings"];
+	        this.err = source["err"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	export class CapacityOptions {
+	    seconds: number;
+	    topic: string;
+	    jstack: boolean;
+	    kafka: boolean;
+	    redis: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CapacityOptions(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.seconds = source["seconds"];
+	        this.topic = source["topic"];
+	        this.jstack = source["jstack"];
+	        this.kafka = source["kafka"];
+	        this.redis = source["redis"];
+	    }
+	}
+	export class CapacityRedisSample {
+	    at: string;
+	    cmd: number;
+	    set: number;
+	    mainPct: number;
+	    us: number;
+	    cap: number;
+	    freePct: number;
+	    verdict: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CapacityRedisSample(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.at = source["at"];
+	        this.cmd = source["cmd"];
+	        this.set = source["set"];
+	        this.mainPct = source["mainPct"];
+	        this.us = source["us"];
+	        this.cap = source["cap"];
+	        this.freePct = source["freePct"];
+	        this.verdict = source["verdict"];
+	    }
+	}
+	export class CapacityRedis {
+	    port: number;
+	    version: string;
+	    role: string;
+	    replicas: number;
+	    backlog: string;
+	    ioThreads: string;
+	    samples: CapacityRedisSample[];
+	    warnings: string[];
+	    err: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CapacityRedis(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.port = source["port"];
+	        this.version = source["version"];
+	        this.role = source["role"];
+	        this.replicas = source["replicas"];
+	        this.backlog = source["backlog"];
+	        this.ioThreads = source["ioThreads"];
+	        this.samples = this.convertValues(source["samples"], CapacityRedisSample);
+	        this.warnings = source["warnings"];
+	        this.err = source["err"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class CapacityResult {
+	    nowMs: number;
+	    kafka?: CapacityKafka;
+	    redis: CapacityRedis[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CapacityResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.nowMs = source["nowMs"];
+	        this.kafka = this.convertValues(source["kafka"], CapacityKafka);
+	        this.redis = this.convertValues(source["redis"], CapacityRedis);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class DiskStat {
 	    mount: string;
 	    dev: string;

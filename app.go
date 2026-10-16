@@ -52,6 +52,11 @@ type App struct {
 
 	logMu     sync.Mutex
 	logFrames map[string][]monitor.Frame // currently opened log: hostId -> frames in order
+
+	// capacityLast keeps the latest capacity check per host so the view still shows it
+	// after the operator switches modes and comes back.
+	capacityMu   sync.Mutex
+	capacityLast map[string]CapacityHostReport
 }
 
 // LogHostInfo summarizes one host's track within an opened log.

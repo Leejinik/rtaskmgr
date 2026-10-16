@@ -22,6 +22,14 @@ export function CancelLogCollect() {
   return window['go']['main']['App']['CancelLogCollect']();
 }
 
+export function CapacityLast(arg1) {
+  return window['go']['main']['App']['CapacityLast'](arg1);
+}
+
+export function CapacityRun(arg1, arg2) {
+  return window['go']['main']['App']['CapacityRun'](arg1, arg2);
+}
+
 export function CaptureEnv(arg1) {
   return window['go']['main']['App']['CaptureEnv'](arg1);
 }
