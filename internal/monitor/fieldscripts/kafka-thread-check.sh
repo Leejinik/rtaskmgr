@@ -22,6 +22,7 @@
 #     --jstack 없이는 Kafka 2.2 이상에서 두 스레드가 같은 이름(data-plane-kafk…)으로 보여 묶어서 보여 준다.
 #  ② 파티션: 한 파티션에 쓰는 일은 스레드를 늘려도 빨라지지 않는다(한계에서도 스레드는 각 15% 안팎으로 보인다).
 #       파티션당 초당 적재량이 PART_LIMIT 의 PART_PREP% 면 늘릴 준비, PART_MAX% 를 넘거나 복제가 빠지면(ISR 에서 빠짐. 비율보다 먼저 판정) → 파티션을 늘린다
+#       토픽 정보를 못 읽으면 복제(ISR)가 「? (모름)」, 판정이 「복제 상태 모름」이다 → kafka-topics.sh --describe 로 직접 본다
 #  둘 다 여유인데 collector 의 kafka queue 가 쌓이면 브로커가 원인이 아니다. Redis 와 collector 의 GC 를 본다.
 WARN=${WARN:-50}                 # 스레드 사용률이 이 값 이상이면 「여유 적음」 (제안값)
 HIGH=${HIGH:-70}                 # 이 값 이상이면 「증설 검토」 (제안값: Kafka 운영 권고 「유휴 30% 미만이면 과부하」)
@@ -164,13 +165,18 @@ say
 say "② 파티션별 적재량과 복제 상태 — 토픽 $TOPIC"
 if [ -s "$TMP/o1" ] && [ -s "$TMP/o2" ]; then
   lim 60 "$KBIN/kafka-topics.sh" --bootstrap-server $BS --describe --topic "$TOPIC" 2>/dev/null | grep 'Partition:' > "$TMP/desc"
+  # 토픽 정보가 없으면 복제 목록이 둘 다 비어 「같다」로 보여 정상처럼 판정됐다(2026-10-16 검토). 모름으로 낸다.
+  [ -s "$TMP/desc" ] || warn "토픽 정보를 조회하지 못해 복제(ISR) 상태를 모릅니다. kafka-topics.sh --describe 로 직접 확인하세요."
   join -t: -1 2 -2 2 <(sort -t: -k2,2 "$TMP/o1") <(sort -t: -k2,2 "$TMP/o2") | awk -F: -v dt="$(awk -v a="$(cat "$TMP/o1.t")" -v b="$(cat "$TMP/o2.t")" 'BEGIN{print b-a}')" -v lim="$PART_LIMIT" -v prep="$PART_PREP" -v pmax="$PART_MAX" -v desc="$TMP/desc" -v tsv="$TSV" -v topic="$TOPIC" '
     BEGIN{ while((getline l < desc)>0){ p=l; sub(/.*Partition: /,"",p); sub(/[^0-9].*/,"",p); ld=l; sub(/.*Leader: /,"",ld); sub(/[^0-9-].*/,"",ld); rp=l; sub(/.*Replicas: /,"",rp); sub(/[ \t].*/,"",rp); is=l; sub(/.*Isr: /,"",is); sub(/[ \t].*/,"",is); L[p]=ld; RP[p]=rp; IS[p]=is }
            if(!tsv) printf "  %-8s %14s %12s %8s %-12s   %s\n", "파티션", "초당 적재량", "한계 대비", "리더", "복제(ISR)", "판정" }
-    { p=$1; rate=($5-$3)/dt; pct=rate/lim*100; ok=(RP[p]==IS[p] || length(RP[p])==length(IS[p]));
-      j=(!ok ? "파티션 늘림" : (pct>=100 ? "한계" : (pct>=pmax ? "파티션 늘림" : (pct>=prep ? "늘릴 준비" : "여유 있음"))));
-      if(tsv) printf "P\t%s\t%.0f\t%.1f\t%s\t%s\t%d\t%s\n", p, rate, pct, L[p], IS[p], ok, j;
-      else printf "  %-8s %10.1f만 건 %10.0f%% %8s %-12s   %s\n", p, rate/10000, pct, L[p], IS[p] (ok?"":" (빠짐)"), j; tot+=rate }
+    { p=$1; rate=($5-$3)/dt; pct=rate/lim*100;
+      # ISR 은 복제본 목록의 부분집합이라 길이가 같으면 같은 집합이다(순서만 다를 수 있다).
+      known=((p in RP) && RP[p]!="" && IS[p]!=""); ok=known && (RP[p]==IS[p] || length(RP[p])==length(IS[p]));
+      # 복제 상태를 모르면 「여유 있음」·「늘릴 준비」를 내지 않는다. 60% 이상이면 어차피 늘림이다.
+      j=(known && !ok ? "파티션 늘림" : (pct>=100 ? "한계" : (pct>=pmax ? "파티션 늘림" : (!known ? "복제 상태 모름" : (pct>=prep ? "늘릴 준비" : "여유 있음")))));
+      if(tsv) printf "P\t%s\t%.0f\t%.1f\t%s\t%s\t%s\t%s\n", p, rate, pct, L[p], IS[p], (known ? (ok ? "1" : "0") : "?"), j;
+      else printf "  %-8s %10.1f만 건 %10.0f%% %8s %-12s   %s\n", p, rate/10000, pct, (known ? L[p] : "?"), (known ? IS[p] (ok?"":" (빠짐)") : "? (모름)"), j; tot+=rate }
     END{ if(tsv) printf "S\t%.0f\t%.0f\t%s\n", tot, lim, topic;
          else printf "  토픽 합계: 초당 %.1f만 건 (한계 기준값: 파티션당 %.0f만 건)\n", tot/10000, lim/10000 }'
 else

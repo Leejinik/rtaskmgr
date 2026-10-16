@@ -46,13 +46,16 @@ type CapacityKafkaThread struct {
 }
 
 type CapacityKafkaPart struct {
-	Part    string  `json:"part"`
-	Rate    float64 `json:"rate"`
-	Pct     float64 `json:"pct"`
-	Leader  string  `json:"leader"`
-	ISR     string  `json:"isr"`
-	ISROk   bool    `json:"isrOk"`
-	Verdict string  `json:"verdict"`
+	Part   string  `json:"part"`
+	Rate   float64 `json:"rate"`
+	Pct    float64 `json:"pct"`
+	Leader string  `json:"leader"`
+	ISR    string  `json:"isr"`
+	ISROk  bool    `json:"isrOk"`
+	// ISRKnown is false when the topic could not be described: the replica lists
+	// are missing, so ISROk says nothing (the script used to call that healthy).
+	ISRKnown bool   `json:"isrKnown"`
+	Verdict  string `json:"verdict"`
 }
 
 type CapacityKafka struct {
@@ -338,7 +341,7 @@ func parseKafkaRec(k *CapacityKafka, f []string) bool {
 			return false
 		}
 		k.Parts = append(k.Parts, CapacityKafkaPart{Part: f[1], Rate: capFloat(f[2]), Pct: capFloat(f[3]),
-			Leader: f[4], ISR: f[5], ISROk: f[6] == "1", Verdict: f[7]})
+			Leader: f[4], ISR: f[5], ISROk: f[6] == "1", ISRKnown: f[6] != "?", Verdict: f[7]})
 	case "S":
 		if len(f) < 4 {
 			return false

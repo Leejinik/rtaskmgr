@@ -845,6 +845,7 @@ export namespace monitor {
 	    leader: string;
 	    isr: string;
 	    isrOk: boolean;
+	    isrKnown: boolean;
 	    verdict: string;
 	
 	    static createFrom(source: any = {}) {
@@ -859,6 +860,7 @@ export namespace monitor {
 	        this.leader = source["leader"];
 	        this.isr = source["isr"];
 	        this.isrOk = source["isrOk"];
+	        this.isrKnown = source["isrKnown"];
 	        this.verdict = source["verdict"];
 	    }
 	}

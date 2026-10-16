@@ -18,7 +18,7 @@ const SEC_OPTS = [10, 20, 30, 60];
 function vcls(v: string): string {
   switch (v) {
     case "여유 있음": return "gt-v-good";
-    case "여유 적음": case "늘릴 준비": return "gt-v-warn";
+    case "여유 적음": case "늘릴 준비": case "복제 상태 모름": return "gt-v-warn";
     case "증설 검토": case "상한 도달": case "파티션 늘림": case "한계": case "복제 빠짐": return "gt-v-bad";
     default: return "gt-v-dim";
   }
@@ -218,7 +218,10 @@ export default function CapCheckView({ hosts, connected }: Props) {
                     {(partSrc.k.parts as any[]).map((p) => (
                       <tr key={p.part}>
                         <td>{p.part}</td><td className="num">{man(p.rate)} 건</td><td className="num">{p.pct.toFixed(0)}%</td>
-                        <td className="num">{p.leader}</td><td>{p.isr}{p.isrOk ? "" : " (빠짐)"}</td>
+                        <td className="num">{p.isrKnown === false ? "?" : p.leader}</td>
+                        <td>{p.isrKnown === false
+                          ? <span className="gt-v-warn" title="토픽 정보를 조회하지 못했습니다. 브로커 서버에서 kafka-topics.sh --describe 로 확인하세요">? 모름</span>
+                          : <>{p.isr}{p.isrOk ? "" : " (빠짐)"}</>}</td>
                         <td><span className={"gt-badge " + vcls(p.verdict)}>{p.verdict}</span></td>
                       </tr>
                     ))}
@@ -227,6 +230,7 @@ export default function CapCheckView({ hosts, connected }: Props) {
                 <div className="lc-dim cc-foot">
                   토픽 합계 초당 {man(partSrc.k.topicTotal)} 건 · 한계 기준값 파티션당 {man(partSrc.k.partLimit)} 건.
                   50% 늘릴 준비 / 60% 파티션 늘림 / 복제가 빠지면(ISR 「빠짐」) 비율과 관계없이 파티션 늘림.
+                  ISR 이 「? 모름」이면 토픽 정보를 못 읽은 것 — 복제 상태를 모르니 브로커 서버에서 kafka-topics.sh --describe 로 확인하세요.
                 </div>
               </>
             )}

@@ -52,6 +52,27 @@ func TestParseCapOutput(t *testing.T) {
 	}
 }
 
+// A partition whose topic could not be described comes as "?" and must not read as
+// a healthy replica set.
+func TestParseCapISRUnknown(t *testing.T) {
+	r := ParseCapacityOutput("NOW|1\nK|BEGIN\n" +
+		"H\th\t2026-10-16 10:00:00\t20\t1\t3\t8\t-Xmx1G\t8\tshort\t0\t-\n" +
+		"W\t토픽 정보를 조회하지 못해 복제(ISR) 상태를 모릅니다. kafka-topics.sh --describe 로 직접 확인하세요.\n" +
+		"P\t0\t100\t0.0\t\t\t?\t복제 상태 모름\n" +
+		"P\t1\t100\t0.0\t1\t1,2\t1\t여유 있음\n" +
+		"K|END\n")
+	p := r.Kafka.Parts
+	if len(p) != 2 || p[0].ISRKnown || p[0].ISROk || p[0].Verdict != "복제 상태 모름" {
+		t.Fatalf("unknown part %+v", p)
+	}
+	if !p[1].ISRKnown || !p[1].ISROk {
+		t.Fatalf("known part %+v", p[1])
+	}
+	if len(r.Kafka.Warnings) != 1 {
+		t.Fatalf("warning %+v", r.Kafka.Warnings)
+	}
+}
+
 func TestParseCapKafkaError(t *testing.T) {
 	r := ParseCapacityOutput("NOW|1\nK|BEGIN\nE\tKafka 브로커 프로세스를 찾지 못했습니다.\nK|END\n")
 	if r.Kafka == nil || r.Kafka.Err != "Kafka 브로커 프로세스를 찾지 못했습니다." {
