@@ -3,6 +3,7 @@ package statsreg
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -66,7 +67,7 @@ func TestSelectionValidation(t *testing.T) {
 func TestReceiptAndNotificationContract(t *testing.T) {
 	s := Service{Directory: t.TempDir()}
 	r := Result{ID: uuid.NewString(), DeviceIDs: []int64{100, 101}, InterfaceIDs: []int64{200, 201}}
-	rec := receipt{Result: r, TwoPhase: true, DeviceMessages: deviceNotifications(r), PointMessages: pointNotifications(r)}
+	rec := receipt{Result: r, TwoPhase: true, DeviceMessages: deviceNotifications(r), PointMessages: pointNotifications(r, nil)}
 	if e := s.saveReceipt(rec); e != nil {
 		t.Fatal(e)
 	}
@@ -119,8 +120,49 @@ func TestNotificationsSplitIntoPhases(t *testing.T) {
 	if got := strings.Join(codes(deviceNotifications(r)), ","); got != "SPECIFY_RULE_UPDATED_NOTIFICATION,DEVICE_ADDED_NOTIFICATION" {
 		t.Fatal("device phase:", got)
 	}
-	if got := strings.Join(codes(pointNotifications(r)), ","); got != "CHECKPOINT_UPDATED_NOTIFICATION,SPECIFY_RULE_UPDATED_NOTIFICATION" {
+	if got := strings.Join(codes(pointNotifications(r, nil)), ","); got != "CHECKPOINT_UPDATED_NOTIFICATION,SPECIFY_RULE_UPDATED_NOTIFICATION" {
 		t.Fatal("checkpoint phase:", got)
+	}
+}
+
+func TestMovedCheckpointsReloadBothInterfaces(t *testing.T) {
+	var v struct {
+		IDs []int64 `json:"deviceInterfaceIds"`
+	}
+	// Left interfaces first (collector NPE otherwise), each interface once.
+	if e := json.Unmarshal(pointNotifications(Result{InterfaceIDs: []int64{4664, 4665}}, []int64{2000, 2000})[0], &v); e != nil {
+		t.Fatal(e)
+	}
+	if fmt.Sprint(v.IDs) != "[2000 4664 4665]" {
+		t.Fatalf("CHECKPOINT_UPDATED interfaces: %v", v.IDs)
+	}
+}
+
+// A move only applies to the checkpoint seen at analysis; anything else rolls
+// the whole second phase back.
+func TestSecondPhaseMovesOnlyUnchangedCheckpoints(t *testing.T) {
+	db, m, e := sqlmock.New()
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer db.Close()
+	mv := []Point{{Key: "liz.stats.collector.{17}.cpu", Host: "server08", CheckpointID: 500, FromInterfaceID: 2000, Move: true}}
+	m.ExpectBegin()
+	m.ExpectExec("UPDATE checkpoint SET device_id=\\?, device_interface_id=\\? WHERE id=\\? AND device_interface_id=\\? AND request_command=\\? AND flag=1").WithArgs(int64(4664), int64(4664), int64(500), int64(2000), mv[0].Key).WillReturnResult(sqlmock.NewResult(0, 1))
+	tx, _ := db.Begin()
+	ids, _, moved, e := secondPhase(context.Background(), tx, nil, mv, []string{"server08"}, []int64{4664}, []int64{4664}, 3053)
+	if e != nil || len(ids) != 0 || len(moved) != 1 || moved[0] != 500 {
+		t.Fatalf("move: ids=%v moved=%v err=%v", ids, moved, e)
+	}
+	m.ExpectExec("UPDATE checkpoint").WillReturnResult(sqlmock.NewResult(0, 0))
+	if _, _, _, e = secondPhase(context.Background(), tx, nil, mv, []string{"server08"}, []int64{4664}, []int64{4664}, 3053); e == nil {
+		t.Fatal("moved a checkpoint that changed since analysis")
+	}
+	if _, _, _, e = secondPhase(context.Background(), tx, nil, mv, []string{"server06"}, []int64{2000}, []int64{2000}, 3053); e == nil {
+		t.Fatal("moved without a target device")
+	}
+	if e = m.ExpectationsWereMet(); e != nil {
+		t.Fatal(e)
 	}
 }
 
@@ -152,7 +194,7 @@ func TestCommitCheckpointsResumesOnlyItsOwnLostCommit(t *testing.T) {
 		t.Fatal("adopted checkpoints this receipt never tried to commit")
 	}
 
-	rec.PointMessages = pointNotifications(rec.Result)
+	rec.PointMessages = pointNotifications(rec.Result, nil)
 	m.ExpectQuery("SELECT id FROM checkpoint WHERE device_interface_id IN").WithArgs(int64(7), int64(8), "a", "b").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(30)).AddRow(int64(31)))
 	if e = s.commitCheckpoints(context.Background(), db, &rec); e != nil {
 		t.Fatal(e)
@@ -263,5 +305,40 @@ func TestCheckpointPhaseRechecksDuplicates(t *testing.T) {
 	}
 	if e = m.ExpectationsWereMet(); e != nil {
 		t.Fatal(e)
+	}
+}
+
+// The collector parses every non-string point with Double.parseDouble; a key whose
+// value is not a number (trunk: liz.stats.api.{3}.snmp.{3}.rpm = "") logs an error
+// each interval and is never collected, so it is offered unselected.
+func TestNonNumericValueOfNumericPointIsOfferedUnselected(t *testing.T) {
+	tpl := []template{{ID: 1, Name: "SNMP rpm", Pattern: "liz.stats.api.{module_id}.snmp.{n}.rpm", Format: 3, Interval: 60000},
+		{ID: 2, Name: "status", Pattern: "liz.stats.api.{module_id}.status", Format: 4, Interval: 10000}}
+	values := map[string]string{
+		"liz.stats.api.{3}.snmp.{3}.rpm": "",
+		"liz.stats.api.{4}.snmp.{3}.rpm": " 12.5 ",
+		"liz.stats.api.{5}.snmp.{3}.rpm": "Inf",
+		"liz.stats.api.{3}.status":       "",
+	}
+	pts := makePoints(values, []Server{{Hostname: "server_1"}}, []module{{3, "server_1"}, {4, "server_1"}, {5, "server_1"}}, tpl)
+	got := map[string]bool{}
+	for _, p := range pts {
+		got[p.Key] = p.BadValue
+		if p.BadValue && (p.Selected || p.Warning == "") {
+			t.Fatalf("%s: bad value must be unselected with a warning: %+v", p.Key, p)
+		}
+	}
+	want := map[string]bool{"liz.stats.api.{3}.snmp.{3}.rpm": true, "liz.stats.api.{4}.snmp.{3}.rpm": false, "liz.stats.api.{5}.snmp.{3}.rpm": true, "liz.stats.api.{3}.status": false}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("BadValue %v, want %v", got, want)
+	}
+	// Later rules that select (deleted key) must not bring it back.
+	p := Plan{Points: pts}
+	markDeleted(&p, map[string]bool{"liz.stats.api.{3}.snmp.{3}.rpm": true})
+	keepBadValuesOff(&p)
+	for _, pt := range p.Points {
+		if pt.BadValue && pt.Selected {
+			t.Fatalf("%s re-selected", pt.Key)
+		}
 	}
 }

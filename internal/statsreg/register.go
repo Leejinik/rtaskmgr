@@ -28,6 +28,8 @@ type Result struct {
 	DeviceIDs     []int64 `json:"deviceIds"`
 	InterfaceIDs  []int64 `json:"interfaceIds"`
 	CheckpointIDs []int64 `json:"checkpointIds"`
+	// MovedIDs: existing checkpoints this run moved to their current host's device.
+	MovedIDs []int64 `json:"movedIds"`
 	// NewDeviceIDs: devices created by this run (all of DeviceIDs for a new
 	// registration; only new servers' devices for an update).
 	NewDeviceIDs []int64 `json:"newDeviceIds"`
@@ -54,6 +56,7 @@ type receipt struct {
 	TwoPhase          bool
 	Hosts             []string `json:",omitempty"` // Hosts[i] owns DeviceIDs[i] and InterfaceIDs[i]
 	Points            []Point  `json:",omitempty"` // selected points, inserted in the second phase
+	Moves             []Point  `json:",omitempty"` // checkpoints moved in the second phase
 	DeviceMessages    []json.RawMessage
 	DeviceSent        int
 	DevicesNotifiedAt time.Time
@@ -71,7 +74,7 @@ func (s *Service) session(id string) (session, error) {
 func activeServers(sel Selection) []Server {
 	used := map[string]bool{}
 	for _, p := range sel.Points {
-		if p.Selected {
+		if p.Selected || p.Move {
 			used[p.Host] = true
 		}
 	}
@@ -205,7 +208,8 @@ func audit(ctx context.Context, tx *sql.Tx, cache map[string]auditShape, table s
 		case base[c]:
 			expr = append(expr, "`"+c+"`")
 		case strings.HasSuffix(c, "_mod"):
-			if revtype == 1 && c != "devices_mod" && c != "device_interfaces_mod" {
+			// Modified relations: a group's devices/interfaces, a moved checkpoint's device/interface.
+			if revtype == 1 && c != "devices_mod" && c != "device_interfaces_mod" && !(table == "checkpoint" && (c == "device_mod" || c == "device_interface_mod")) {
 				expr = append(expr, "0")
 			} else {
 				expr = append(expr, "1")
@@ -313,7 +317,8 @@ func (s *Service) register(ctx context.Context, sel Selection, rollbackOnly bool
 		}
 		return Result{}, fmt.Errorf("선택한 키 %d개가 이미 등록돼 있습니다(분석 이후 등록됨) — 다시 조회하세요", n)
 	}
-	res := Result{ID: uuid.NewString(), DeviceIDs: []int64{}, InterfaceIDs: []int64{}, CheckpointIDs: []int64{}, NewDeviceIDs: []int64{}, Missing: []int64{}}
+	moves := movedPoints(sel)
+	res := Result{ID: uuid.NewString(), DeviceIDs: []int64{}, InterfaceIDs: []int64{}, CheckpointIDs: []int64{}, MovedIDs: []int64{}, NewDeviceIDs: []int64{}, Missing: []int64{}}
 	var hosts []string
 	var refs []audRef
 	groupName := sel.GroupName
@@ -334,19 +339,19 @@ func (s *Service) register(ctx context.Context, sel Selection, rollbackOnly bool
 	}
 	if rollbackOnly {
 		// Exercise the second phase's SQL too, inside the same transaction.
-		ids, pointRefs, e := insertCheckpoints(ctx, tx, points, hosts, res.DeviceIDs, res.InterfaceIDs, cat.DriverID)
+		ids, pointRefs, moved, e := secondPhase(ctx, tx, points, moves, hosts, res.DeviceIDs, res.InterfaceIDs, cat.DriverID)
 		if e != nil {
 			return res, e
 		}
-		res.CheckpointIDs = ids
-		if e = writeAudits(ctx, tx, pointRefs, nil); e != nil {
+		res.CheckpointIDs, res.MovedIDs = ids, moved
+		if e = writeAudits(ctx, tx, pointRefs, movedRefs(moved)); e != nil {
 			return res, e
 		}
 		return res, tx.Rollback()
 	}
 	res.Stage = stagePrepared
 	rec := receipt{Result: res, DBHost: v.Config.DBHost, DBPort: v.Config.DBPort, Brokers: v.Config.Brokers, GroupName: groupName,
-		TwoPhase: true, Hosts: hosts, Points: points, DeviceMessages: []json.RawMessage{}}
+		TwoPhase: true, Hosts: hosts, Points: points, Moves: moves, DeviceMessages: []json.RawMessage{}}
 	if len(res.NewDeviceIDs) > 0 {
 		rec.DeviceMessages = deviceNotifications(res)
 	}
@@ -364,8 +369,22 @@ func (s *Service) register(ctx context.Context, sel Selection, rollbackOnly bool
 	_ = s.saveReceipt(rec)
 	out := s.proceed(ctx, v.Config, db, rec)
 	if out.Committed {
-		// Remember the choices, unselected placed keys included. Never fails the registration.
-		if ev, e := s.learnPatterns(sel.Points, "registration "+out.ID); e != nil {
+		// Remember the choices, unselected placed keys included, but only keys the
+		// user could choose: registered keys are hidden and never selected, and
+		// learning them taught "not selected" for 44 key shapes (2026-09-22).
+		registered, bad := map[string]bool{}, map[string]bool{}
+		for _, p := range v.Plan.Points {
+			registered[p.Key], bad[p.Key] = p.Registered, p.BadValue
+		}
+		learn := []Point{}
+		for _, p := range sel.Points {
+			// An update picks a few keys on purpose; its unselected keys are not a choice to remember.
+			// Nor is leaving out a key whose value is not a number yet (it may become one).
+			if !registered[p.Key] && (upd == nil || p.Selected) && (p.Selected || !bad[p.Key]) {
+				learn = append(learn, p)
+			}
+		}
+		if ev, e := s.learnPatterns(learn, "registration "+out.ID); e != nil {
 			out.Message += " (등록 패턴 저장 실패: " + e.Error() + ")"
 		} else if n := len(ev.Changes); n > 0 {
 			out.Message += fmt.Sprintf(" 등록 패턴 %d건을 기억했습니다.", n)
@@ -377,6 +396,87 @@ func (s *Service) register(ctx context.Context, sel Selection, rollbackOnly bool
 type audRef struct {
 	table, entity string
 	id            int64
+}
+
+func movedPoints(sel Selection) []Point {
+	out := []Point{}
+	for _, p := range sel.Points {
+		if p.Move {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// movedRefs audits moved checkpoints as modified (revtype 1).
+func movedRefs(ids []int64) []audRef {
+	out := []audRef{}
+	for _, id := range ids {
+		out = append(out, audRef{"checkpoint", "Checkpoint", id})
+	}
+	return out
+}
+
+// hostInterface returns the device and interface of host in a run.
+func hostInterface(host string, hosts []string, devices, ifaces []int64) (int64, int64, bool) {
+	for i, h := range hosts {
+		if h == host {
+			return devices[i], ifaces[i], true
+		}
+	}
+	return 0, 0, false
+}
+
+// secondPhase inserts the new checkpoints and moves the ticked ones, in the
+// caller's transaction. A move only applies to a checkpoint that is still live,
+// on the interface seen at analysis and with the same key.
+func secondPhase(ctx context.Context, tx *sql.Tx, points, moves []Point, hosts []string, devices, ifaces []int64, driverID int64) ([]int64, []audRef, []int64, error) {
+	ids, refs := []int64{}, []audRef{}
+	if len(points) > 0 {
+		var e error
+		if ids, refs, e = insertCheckpoints(ctx, tx, points, hosts, devices, ifaces, driverID); e != nil {
+			return nil, nil, nil, e
+		}
+	}
+	moved := []int64{}
+	for _, m := range moves {
+		device, iface, ok := hostInterface(m.Host, hosts, devices, ifaces)
+		if !ok {
+			return nil, nil, nil, fmt.Errorf("옮길 장비를 찾을 수 없습니다: %s → %s", m.Key, m.Host)
+		}
+		r, e := tx.ExecContext(ctx, "UPDATE checkpoint SET device_id=?, device_interface_id=? WHERE id=? AND device_interface_id=? AND request_command=? AND flag=1", device, iface, m.CheckpointID, m.FromInterfaceID, m.Key)
+		if e != nil {
+			return nil, nil, nil, e
+		}
+		if n, err := r.RowsAffected(); err != nil || n != 1 {
+			return nil, nil, nil, fmt.Errorf("체크포인트 %d(%s)가 분석 이후 바뀌어 옮기지 않았습니다 — 다시 조회하세요", m.CheckpointID, m.Key)
+		}
+		moved = append(moved, m.CheckpointID)
+	}
+	if len(ids) == 0 && len(moved) == 0 {
+		return nil, nil, nil, fmt.Errorf("등록하거나 옮길 체크포인트가 없습니다")
+	}
+	return ids, refs, moved, nil
+}
+
+// movesDone counts moves already on their target interface (an earlier attempt
+// of the receipt committed them).
+func movesDone(ctx context.Context, q queryer, rec *receipt) (int, error) {
+	done := 0
+	for _, m := range rec.Moves {
+		_, iface, ok := hostInterface(m.Host, rec.Hosts, rec.Result.DeviceIDs, rec.Result.InterfaceIDs)
+		if !ok {
+			return 0, fmt.Errorf("옮길 장비 기록이 없습니다: %s", m.Host)
+		}
+		var now int64
+		if e := q.QueryRowContext(ctx, "SELECT device_interface_id FROM checkpoint WHERE id=? AND flag=1", m.CheckpointID).Scan(&now); e != nil {
+			return 0, fmt.Errorf("체크포인트 %d 확인 실패: %w", m.CheckpointID, e)
+		}
+		if now == iface {
+			done++
+		}
+	}
+	return done, nil
 }
 
 func selectedPoints(sel Selection) []Point {
@@ -581,13 +681,13 @@ func (s *Service) proceed(ctx context.Context, c Config, db *sql.DB, rec receipt
 		}
 	}
 	// Start listening before the notification so the first values are not missed.
-	watch := s.watchCollection(ctx, c, rec.Result.CheckpointIDs)
+	watch := s.watchCollection(ctx, c, append(append([]int64{}, rec.Result.CheckpointIDs...), rec.Result.MovedIDs...))
 	defer watch.close()
 	if !s.send(ctx, c, &rec, rec.PointMessages, &rec.PointSent, "체크포인트 알림") {
 		return rec.Result
 	}
 	rec.Result.Notified = true
-	window := verifyWindow(rec.Points, s.VerifyWindow)
+	window := verifyWindow(append(append([]Point{}, rec.Points...), rec.Moves...), s.VerifyWindow)
 	seen := watch.wait(ctx, window, func(done, total int, left time.Duration) {
 		s.progress("4/4 수집 확인 중 — %d/%d개 값 수신 (최대 %d초 남음)", done, total, int(left.Seconds()+0.99))
 	})
@@ -679,18 +779,29 @@ func checkpointsOn(ctx context.Context, q queryer, ifaces []int64, points []Poin
 }
 
 func (s *Service) commitCheckpoints(ctx context.Context, db *sql.DB, rec *receipt) error {
-	existing, e := checkpointsOn(ctx, db, rec.Result.InterfaceIDs, rec.Points)
+	existing := []int64{}
+	if len(rec.Points) > 0 {
+		var e error
+		if existing, e = checkpointsOn(ctx, db, rec.Result.InterfaceIDs, rec.Points); e != nil {
+			return e
+		}
+	}
+	done, e := movesDone(ctx, db, rec)
 	if e != nil {
 		return e
 	}
-	if len(existing) > 0 {
+	if len(existing) > 0 || done > 0 {
 		// Only an earlier attempt of this receipt that lost the COMMIT answer may
 		// have put them there (PointMessages are recorded just before COMMIT, and
 		// the phase is one transaction, so it is all or nothing).
-		if len(rec.PointMessages) == 0 || len(existing) != len(rec.Points) {
-			return fmt.Errorf("대상 장비에 같은 키의 체크포인트 %d개가 이미 있습니다(이 등록이 만든 것이 아님). 웹에서 확인하세요", len(existing))
+		if len(rec.PointMessages) == 0 || len(existing) != len(rec.Points) || done != len(rec.Moves) {
+			return fmt.Errorf("대상 장비에 같은 키의 체크포인트 %d개가 이미 있거나 옮길 체크포인트 %d/%d개만 옮겨져 있습니다(이 등록이 만든 것이 아님). 웹에서 확인하세요", len(existing), done, len(rec.Moves))
 		}
 		rec.Result.CheckpointIDs = existing
+		rec.Result.MovedIDs = []int64{}
+		for _, m := range rec.Moves {
+			rec.Result.MovedIDs = append(rec.Result.MovedIDs, m.CheckpointID)
+		}
 	} else {
 		var driverID int64
 		if e = db.QueryRowContext(ctx, "SELECT device_driver_id FROM device_interface WHERE id=?", rec.Result.InterfaceIDs[0]).Scan(&driverID); e != nil {
@@ -713,15 +824,19 @@ func (s *Service) commitCheckpoints(ctx context.Context, db *sql.DB, rec *receip
 		} else if n > 0 {
 			return fmt.Errorf("대기 중에 선택한 키 %d개가 다른 곳에서 등록됐습니다 — 체크포인트는 등록하지 않았습니다(장비만 등록된 상태). 다시 조회해서 업데이트로 진행하세요", n)
 		}
-		s.progress("3/4 체크포인트 %d개 저장 중…", len(rec.Points))
-		ids, refs, e := insertCheckpoints(ctx, tx, rec.Points, rec.Hosts, rec.Result.DeviceIDs, rec.Result.InterfaceIDs, driverID)
+		s.progress("3/4 체크포인트 %d개 저장 · %d개 옮기는 중…", len(rec.Points), len(rec.Moves))
+		ids, refs, moved, e := secondPhase(ctx, tx, rec.Points, rec.Moves, rec.Hosts, rec.Result.DeviceIDs, rec.Result.InterfaceIDs, driverID)
 		if e != nil {
 			return e
 		}
-		if e = writeAudits(ctx, tx, refs, nil); e != nil {
+		if e = writeAudits(ctx, tx, refs, movedRefs(moved)); e != nil {
 			return e
 		}
-		rec.PointMessages = pointNotifications(rec.Result)
+		from := []int64{}
+		for _, m := range rec.Moves {
+			from = append(from, m.FromInterfaceID)
+		}
+		rec.PointMessages = pointNotifications(rec.Result, from)
 		rec.PointSent = 0
 		if e = s.saveReceipt(*rec); e != nil {
 			return fmt.Errorf("복구 기록 저장 실패 — 체크포인트 등록 취소: %w", e)
@@ -729,7 +844,7 @@ func (s *Service) commitCheckpoints(ctx context.Context, db *sql.DB, rec *receip
 		if e = tx.Commit(); e != nil {
 			return fmt.Errorf("커밋 결과 불확실 — 「이어서 진행」이 저장 여부를 먼저 확인합니다: %w", e)
 		}
-		rec.Result.CheckpointIDs = ids
+		rec.Result.CheckpointIDs, rec.Result.MovedIDs = ids, moved
 	}
 	rec.Result.Stage = stageCheckpoints
 	rec.Result.Committed = true
@@ -754,9 +869,25 @@ func deviceNotifications(r Result) []json.RawMessage {
 		notification("DEVICE_ADDED_NOTIFICATION", map[string]any{"deviceIds": r.NewDeviceIDs}, []string{}),
 	}
 }
-func pointNotifications(r Result) []json.RawMessage {
+
+// from: interfaces that moved checkpoints left, so the collector reloads them too.
+// The interfaces moved checkpoints left come first: the collector (v10.2
+// CdoLoader.reloadCheckpoint) drops ids that are gone from an interface, so if the
+// new interface were reloaded first, the old one would then drop the moved id from
+// the cache and the mapping step fails with an NPE, abandoning the whole message.
+func pointNotifications(r Result, from []int64) []json.RawMessage {
+	ifaces := []int64{}
+	for _, id := range append(append([]int64{}, from...), r.InterfaceIDs...) {
+		dup := false
+		for _, v := range ifaces {
+			dup = dup || v == id
+		}
+		if !dup {
+			ifaces = append(ifaces, id)
+		}
+	}
 	return []json.RawMessage{
-		notification("CHECKPOINT_UPDATED_NOTIFICATION", map[string]any{"deviceInterfaceIds": r.InterfaceIDs}, []string{}),
+		notification("CHECKPOINT_UPDATED_NOTIFICATION", map[string]any{"deviceInterfaceIds": ifaces}, []string{}),
 		notification("SPECIFY_RULE_UPDATED_NOTIFICATION", map[string]any{"specifyRuleId": nil}, specifyRecipients),
 	}
 }

@@ -17,7 +17,9 @@ import (
 //   - offers only keys that are not registered yet,
 //   - adds them to the host's existing device in the chosen group, or to a new
 //     device in that group for a new server,
-//   - never touches or deletes existing checkpoints, including ones whose key vanished.
+//   - never deletes existing checkpoints, including ones whose key vanished;
+//   - moves a registered checkpoint to its current host's device only when the
+//     user ticks it (a module moved to another server; same checkpoint id).
 
 type ExistingDevice struct {
 	DeviceID    int64  `json:"deviceId"`
@@ -39,6 +41,7 @@ type ExistingGroup struct {
 
 type registeredKey struct {
 	key            string
+	checkpoint     int64
 	groupID        int64
 	device, iface  int64
 	devName, group string
@@ -47,7 +50,7 @@ type registeredKey struct {
 // loadExisting reads the live (flag=1) checkpoints of this driver with their
 // device, interface and group.
 func loadExisting(ctx context.Context, q queryer, driverID int64) ([]registeredKey, error) {
-	rows, e := q.QueryContext(ctx, `SELECT c.request_command, COALESCE(g.id,0), COALESCE(g.name,''), d.id, d.name, i.id
+	rows, e := q.QueryContext(ctx, `SELECT c.request_command, c.id, COALESCE(g.id,0), COALESCE(g.name,''), d.id, d.name, i.id
 FROM checkpoint c
 JOIN device_interface i ON i.id=c.device_interface_id
 JOIN device d ON d.id=i.device_id
@@ -61,7 +64,7 @@ WHERE i.device_driver_id=? AND c.flag=1 AND d.flag=1 AND i.flag=1 AND c.request_
 	out := []registeredKey{}
 	for rows.Next() {
 		var r registeredKey
-		if e = rows.Scan(&r.key, &r.groupID, &r.group, &r.device, &r.devName, &r.iface); e != nil {
+		if e = rows.Scan(&r.key, &r.checkpoint, &r.groupID, &r.group, &r.device, &r.devName, &r.iface); e != nil {
 			return nil, e
 		}
 		out = append(out, r)
@@ -91,12 +94,14 @@ WHERE i.device_driver_id=? AND c.flag<>1 AND c.request_command IS NOT NULL`, dri
 }
 
 // markDeleted tags keys whose checkpoints were deleted before. They are offered
-// like any new key (user decision 2026-09-21: "flag가 있더라도 새로 생성하자");
-// the tag is information only.
+// again (user decision 2026-09-21: "flag가 있더라도 새로 생성하자") and selected
+// whenever placed, whatever a remembered pattern says (2026-09-22: a deleted
+// device's keys stayed unselected and were silently left out of an update).
 func markDeleted(p *Plan, deleted map[string]bool) {
 	for i := range p.Points {
 		if pt := &p.Points[i]; !pt.Registered && deleted[pt.Key] {
 			pt.Deleted = true
+			pt.Selected = pt.Host != ""
 		}
 	}
 }
@@ -206,10 +211,18 @@ func markExisting(p *Plan, regs []registeredKey, placeOf, anchorOf map[string]st
 			d.Host = majority(votes[id])
 		}
 	}
-	// A registered key now placed on another host than its device: report only.
+	// A registered key now placed on another host than its device. With exactly one
+	// live checkpoint (in a group) it can be moved by an update of that group.
+	live := map[string]int{}
+	for _, r := range regs {
+		live[r.key]++
+	}
 	for _, r := range regs {
 		if pt := present[r.key]; pt != nil && r.groupID != 0 && pt.Host != "" && devs[r.device].Host != "" && pt.Host != devs[r.device].Host {
 			pt.Moved = true
+			if live[r.key] == 1 {
+				pt.CheckpointID, pt.FromInterfaceID, pt.MoveGroupID = r.checkpoint, r.iface, r.groupID
+			}
 		}
 	}
 	p.Existing = []ExistingGroup{}

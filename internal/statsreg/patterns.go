@@ -232,7 +232,8 @@ func (s *Service) applyPatterns(p *Plan) {
 		pt := &p.Points[i]
 		if toks := keyTokens(pt.Key); pt.Host == "" && len(toks) > 0 {
 			if h := f.Placements[toks[0]]; h != "" && hosts[h] {
-				pt.Host = h
+				// Placed by hand before, so it was wanted: selected unless a pattern says otherwise below.
+				pt.Host, pt.Selected = h, true
 				pt.Warning = strings.TrimSpace(strings.Replace(pt.Warning, "· 서버를 찾을 수 없음: 배치 선택 또는 제외", "", 1) + " · 기억된 배치: " + h)
 				placed++
 			}
@@ -280,7 +281,7 @@ func (s *Service) learnPatterns(points []Point, source string) (PatternEvent, er
 	now := time.Now().Format(time.RFC3339)
 	ev := PatternEvent{At: now, Source: source, Changes: []PatternChange{}}
 	for _, p := range points {
-		if p.Host == "" {
+		if p.Host == "" || p.Registered || p.Move {
 			continue
 		}
 		if toks := keyTokens(p.Key); p.Selected && p.Host != "common" && len(toks) > 0 && toks[0] != p.Host && !isDigits(toks[0]) {

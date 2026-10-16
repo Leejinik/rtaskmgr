@@ -41,3 +41,6 @@
 .stats-update-ask ul { margin: 4px 0 8px 18px; }
 .stats-update-ask p { margin: 4px 0; }
 .stats-update-buttons { display: flex; gap: 8px; margin-top: 8px; }
+.stats-new { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 8px; background: #fff3c4; color: #7a5200; font-size: 11px; font-weight: 600; }
+.stats-new-row td { background: rgba(255, 214, 102, 0.12); }
+.stats-moved { margin: 8px 0; }

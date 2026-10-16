@@ -347,6 +347,7 @@ func (s *Service) Inspect(ctx context.Context, c Config) (Plan, error) {
 		return p, fmt.Errorf("삭제된 등록 조회 실패: %w", e)
 	}
 	markDeleted(&p, deleted)
+	keepBadValuesOff(&p)
 	if len(p.Points) == 0 {
 		return p, fmt.Errorf("Redis에 liz.stats.* 키가 없습니다")
 	}

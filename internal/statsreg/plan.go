@@ -51,8 +51,20 @@ type Point struct {
 	RegisteredOn string `json:"registeredOn"`
 	// Moved: registered on a device of another host than the key is placed on now (report only).
 	Moved bool `json:"moved"`
-	// Deleted: a checkpoint with this key existed and was deleted (flag<>1); information only.
+	// Deleted: a checkpoint with this key existed and was deleted (flag<>1). Offered selected.
 	Deleted bool `json:"deleted"`
+	// For a Moved key with exactly one live checkpoint in a group: that checkpoint,
+	// the interface it is on and its group. Move (update of that group only) moves
+	// the checkpoint to the device of Host, keeping its id and history.
+	CheckpointID    int64 `json:"checkpointId"`
+	FromInterfaceID int64 `json:"fromInterfaceId"`
+	MoveGroupID     int64 `json:"moveGroupId"`
+	Move            bool  `json:"move"`
+	// BadValue: a numeric point whose current value is not a number. The collector
+	// (v10.2 LizSystemStatusMonitorService) logs a NumberFormatException for it every
+	// check interval, never collects it and sleeps 100 ms per failure, slowing every
+	// MK119 point. Offered unselected whatever a pattern or deleted-key rule says.
+	BadValue bool `json:"badValue"`
 }
 type Plan struct {
 	ID          string          `json:"id"`
@@ -165,6 +177,11 @@ func makePoints(values map[string]string, servers []Server, modules []module, te
 		if p.Interval <= 0 {
 			p.Interval = 10000
 		}
+		if p.Format != formatString && !javaNumber(values[key]) {
+			p.BadValue = true
+			p.Selected = false
+			p.Warning = strings.TrimSpace(p.Warning + fmt.Sprintf(" · 현재 값 %q 이(가) 숫자가 아님: Collector가 매 주기 오류를 내고 수집하지 않음(기본 제외)", values[key]))
+		}
 		tokens := braces.FindAllStringSubmatch(key, -1)
 		if len(tokens) == 0 {
 			p.Host = "common"
@@ -193,6 +210,36 @@ func makePoints(values map[string]string, servers []Server, modules []module, te
 	return points
 }
 
+// Data format code of a string point (0 Boolean, 1 Integer, 2 Long, 3 Double, 4 String).
+const formatString = 4
+
+// javaNumber reports whether Java's Double.parseDouble would accept v, which the
+// collector applies to every non-string point: surrounding whitespace is allowed,
+// so are NaN and Infinity.
+func javaNumber(v string) bool {
+	v = strings.TrimSpace(v)
+	switch strings.TrimLeft(v, "+-") {
+	case "NaN", "Infinity":
+		return true
+	case "":
+		return false
+	}
+	if l := strings.ToLower(v); strings.Contains(l, "inf") || strings.Contains(l, "nan") {
+		return false // Go also takes inf/infinity/nan in any case; Java does not
+	}
+	_, err := strconv.ParseFloat(strings.TrimRight(v, "dDfF"), 64)
+	return err == nil
+}
+
+// keepBadValuesOff runs after patterns and the deleted-key rule, which may select.
+func keepBadValuesOff(p *Plan) {
+	for i := range p.Points {
+		if p.Points[i].BadValue {
+			p.Points[i].Selected = false
+		}
+	}
+}
+
 func validateSelection(plan Plan, s Selection) error {
 	validName := func(n string) bool {
 		return strings.TrimSpace(n) != "" && n == strings.TrimSpace(n) && len([]rune(n)) <= 100
@@ -211,7 +258,7 @@ func validateSelection(plan Plan, s Selection) error {
 	hosts := map[string]bool{}
 	used := map[string]bool{}
 	for _, p := range s.Points {
-		if p.Selected {
+		if p.Selected || p.Move {
 			used[p.Host] = true
 		}
 	}
@@ -238,6 +285,18 @@ func validateSelection(plan Plan, s Selection) error {
 	seen := map[string]bool{}
 	count := 0
 	for _, p := range s.Points {
+		if p.Move {
+			original, ok := keys[p.Key]
+			if !ok || seen[p.Key] || p.Selected || !original.Moved || original.CheckpointID == 0 || original.CheckpointID != p.CheckpointID || original.FromInterfaceID != p.FromInterfaceID || original.Host != p.Host || !hosts[p.Host] {
+				return fmt.Errorf("옮길 수 없는 체크포인트입니다 — 다시 조회하세요: %s", p.Key)
+			}
+			if upd == nil || original.MoveGroupID != upd.GroupID {
+				return fmt.Errorf("옮기기는 그 체크포인트가 있는 그룹을 업데이트할 때만 됩니다: %s", p.Key)
+			}
+			seen[p.Key] = true
+			count++
+			continue
+		}
 		if !p.Selected {
 			continue
 		}

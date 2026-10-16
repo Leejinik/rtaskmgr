@@ -164,11 +164,77 @@ func TestExistingKeysAndUpdateTarget(t *testing.T) {
 	}
 }
 
+// Deleted keys are offered selected even when a pattern says otherwise
+// (2026-09-22: a deleted device's keys were left out of an update).
 func TestDeletedKeysOfferedAsNew(t *testing.T) {
-	p := Plan{Points: []Point{{Key: "a", Selected: true}, {Key: "b", Selected: true, Registered: true}, {Key: "c", Selected: true}}}
-	markDeleted(&p, map[string]bool{"a": true, "b": true})
+	p := Plan{Points: []Point{{Key: "a", Host: "h"}, {Key: "b", Host: "h", Selected: true, Registered: true}, {Key: "c", Host: "h", Selected: true}, {Key: "d"}}}
+	markDeleted(&p, map[string]bool{"a": true, "b": true, "d": true})
 	if !p.Points[0].Deleted || !p.Points[0].Selected || p.Points[1].Deleted || !p.Points[2].Selected {
 		t.Fatalf("%+v", p.Points)
+	}
+	if !p.Points[3].Deleted || p.Points[3].Selected {
+		t.Fatal("an unplaced deleted key must stay unselected")
+	}
+}
+
+// 2026-09-22: collector 17 moved server06 -> server08; its checkpoints stayed
+// on the server06 device. An update of that group may move them, nothing else.
+func TestMovedCheckpointCanBeMovedByItsGroupOnly(t *testing.T) {
+	p := Plan{Servers: []Server{{Hostname: "server06"}, {Hostname: "server08"}}, Points: []Point{
+		{Key: "liz.stats.collector.{17}.cpu", Host: "server08", Name: "c", Interval: 10000, Format: 3},
+		{Key: "liz.stats.collector.{9}.cpu", Host: "server08", Name: "d", Interval: 10000, Format: 3},
+	}}
+	regs := []registeredKey{
+		{key: "liz.stats.collector.{17}.cpu", checkpoint: 500, groupID: 40, group: "System", device: 2000, devName: "server06", iface: 2000},
+		{key: "liz.stats.collector.{9}.cpu", checkpoint: 600, groupID: 40, group: "System", device: 2000, devName: "server06", iface: 2000},
+		{key: "liz.stats.collector.{9}.cpu", checkpoint: 601, groupID: 40, group: "System", device: 2000, devName: "server06", iface: 2000},
+	}
+	markExisting(&p, regs, map[string]string{}, nil)
+	pt := p.Points[0]
+	if !pt.Moved || pt.CheckpointID != 500 || pt.FromInterfaceID != 2000 || pt.MoveGroupID != 40 {
+		t.Fatalf("move target: %+v", pt)
+	}
+	if p.Points[1].CheckpointID != 0 {
+		t.Fatal("a key with two live checkpoints must not be movable")
+	}
+	mv := pt
+	mv.Move = true
+	sel := Selection{UpdateGroupID: 40, Servers: []Server{{Hostname: "server08", Name: "server08"}}, Points: []Point{mv}}
+	if e := validateSelection(p, sel); e != nil {
+		t.Fatal(e)
+	}
+	if hs := activeServers(sel); len(hs) != 1 || hs[0].Hostname != "server08" {
+		t.Fatalf("a move needs the target host's device: %+v", hs)
+	}
+	for name, change := range map[string]func(*Selection){
+		"new group":     func(s *Selection) { s.UpdateGroupID, s.GroupName = 0, "New" },
+		"other host":    func(s *Selection) { s.Points[0].Host = "server06" },
+		"other id":      func(s *Selection) { s.Points[0].CheckpointID = 501 },
+		"also selected": func(s *Selection) { s.Points[0].Selected = true },
+		"not movable":   func(s *Selection) { s.Points[0] = p.Points[1]; s.Points[0].Move = true },
+	} {
+		bad := Selection{UpdateGroupID: 40, GroupName: "System", Servers: sel.Servers, Points: []Point{mv}}
+		change(&bad)
+		if e := validateSelection(p, bad); e == nil {
+			t.Fatal(name, "accepted")
+		}
+	}
+}
+
+// Registered keys are hidden and unselected: learning them taught "not
+// selected" for 44 key shapes (2026-09-22).
+func TestPatternsIgnoreRegisteredAndMovedKeys(t *testing.T) {
+	s := Service{Directory: t.TempDir()}
+	s.PatternFile = filepath.Join(s.Directory, "p.json")
+	if _, e := s.learnPatterns([]Point{{Key: "liz.stats.a.{server01}.cpu", Host: "server01", Name: "Server01 CPU", Interval: 10000, Selected: true}}, "first"); e != nil {
+		t.Fatal(e)
+	}
+	ev, e := s.learnPatterns([]Point{
+		{Key: "liz.stats.a.{server01}.cpu", Host: "server01", Name: "Server01 CPU", Interval: 10000, Registered: true},
+		{Key: "liz.stats.a.{server02}.cpu", Host: "server02", Name: "Server02 CPU", Interval: 10000, Move: true},
+	}, "update")
+	if e != nil || len(ev.Changes) != 0 {
+		t.Fatalf("registered/moved keys changed patterns: %+v %v", ev.Changes, e)
 	}
 }
 

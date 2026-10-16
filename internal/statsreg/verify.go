@@ -156,8 +156,12 @@ func (w *collectWatch) close() {
 }
 
 func summarizeCollection(r *Result, seen map[int64]int, watchErr error) {
-	total := len(r.CheckpointIDs)
-	saved := fmt.Sprintf("장비 %d개, 체크포인트 %d개 등록", len(r.DeviceIDs), total)
+	all := append(append([]int64{}, r.CheckpointIDs...), r.MovedIDs...)
+	total := len(all)
+	saved := fmt.Sprintf("장비 %d개, 체크포인트 %d개 등록", len(r.DeviceIDs), len(r.CheckpointIDs))
+	if len(r.MovedIDs) > 0 {
+		saved += fmt.Sprintf(" · %d개 옮김", len(r.MovedIDs))
+	}
 	r.Missing = []int64{}
 	if watchErr != nil && seen == nil {
 		r.Verified, r.Collected = false, 0
@@ -166,7 +170,7 @@ func summarizeCollection(r *Result, seen map[int64]int, watchErr error) {
 	}
 	partial := 0
 	r.Collected = 0
-	for _, id := range r.CheckpointIDs {
+	for _, id := range all {
 		switch n := seen[id]; {
 		case n == 0:
 			r.Missing = append(r.Missing, id)
