@@ -316,6 +316,12 @@ func validateSelection(plan Plan, s Selection) error {
 		if original.Registered {
 			return fmt.Errorf("이미 등록된 키입니다(중복 등록 불가): %s (%s)", p.Key, original.RegisteredOn)
 		}
+		// 3rd round: a key whose value is not a number could be ticked with its
+		// numeric data format locked and passed the check. The collector fails on it
+		// every interval and slows every MK119 point (see Point.BadValue).
+		if original.BadValue && p.Format != formatString {
+			return fmt.Errorf("값이 숫자가 아닌 키는 숫자로 등록할 수 없습니다: %s — 수집 서버가 매 주기 오류를 내고 다른 수집까지 늦어집니다. 값이 숫자가 되면 다음 업데이트에서 추가하세요", p.Key)
+		}
 		if !hosts[p.Host] {
 			return fmt.Errorf("서버 배치를 선택하세요: %s", p.Key)
 		}
