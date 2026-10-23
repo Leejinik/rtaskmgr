@@ -2028,6 +2028,24 @@ export namespace statsreg {
 	        this.source = source["source"];
 	    }
 	}
+	export class DiscoverHostsEntry {
+	    server: string;
+	    hostname: string;
+	    name: string;
+	    ip: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiscoverHostsEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.server = source["server"];
+	        this.hostname = source["hostname"];
+	        this.name = source["name"];
+	        this.ip = source["ip"];
+	    }
+	}
 	export class DiscoverKafkaRow {
 	    hostname: string;
 	    ip: string;
@@ -2120,6 +2138,7 @@ export namespace statsreg {
 	    kafkaReason: string;
 	    warnings: string[];
 	    servers: DiscoverServer[];
+	    hosts: DiscoverHostsEntry[];
 	
 	    static createFrom(source: any = {}) {
 	        return new DiscoverResult(source);
@@ -2133,6 +2152,7 @@ export namespace statsreg {
 	        this.kafkaReason = source["kafkaReason"];
 	        this.warnings = source["warnings"];
 	        this.servers = this.convertValues(source["servers"], DiscoverServer);
+	        this.hosts = this.convertValues(source["hosts"], DiscoverHostsEntry);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2696,6 +2716,24 @@ export namespace statsreg {
 	        this.total = source["total"];
 	        this.keysLeft = source["keysLeft"];
 	        this.message = source["message"];
+	    }
+	}
+	export class PlacementHint {
+	    token: string;
+	    host: string;
+	    source: string;
+	    note: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PlacementHint(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.token = source["token"];
+	        this.host = source["host"];
+	        this.source = source["source"];
+	        this.note = source["note"];
 	    }
 	}
 	export class Point {

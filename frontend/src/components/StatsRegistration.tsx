@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { StatsInspect, StatsValidate, StatsRegister, StatsRetry, StatsImportPatterns, StatsConnections, StatsSaveConnection, StatsClusterConnections, StatsSetClusterConnection, StatsTesterPrefix, StatsCancelInspect } from "../../wailsjs/go/main/App";
+import { StatsInspect, StatsValidate, StatsRegister, StatsRetry, StatsImportPatterns, StatsConnections, StatsSaveConnection, StatsClusterConnections, StatsSetClusterConnection, StatsTesterPrefix, StatsCancelInspect, StatsPlacementHints } from "../../wailsjs/go/main/App";
 import { EventsOn } from "../../wailsjs/runtime";
 import { statsreg } from "../../wailsjs/go/models";
 import { useEsc } from "../useEsc";
@@ -60,6 +60,27 @@ export default function StatsRegistration({ initialHost, cluster, onClose }: { i
   // Tokens some key of which still has no server.
   const unresolvedLeft = unresolvedTokens.filter(token => selection?.points.some(p => !p.host && firstToken(p.key) === token)).length;
   useEsc(onClose, !busy && !inner);
+  // Servers recommended for those values by the cluster's /etc/hosts (logan 10-23: 「hosts 보고 배치」).
+  const [hints, setHints] = useState<Record<string, statsreg.PlacementHint>>({});
+  const [hintsPlan, setHintsPlan] = useState("");
+  const [hintsError, setHintsError] = useState("");
+  const unplaced = (p: statsreg.Point) => !plan?.points.find(o => o.key === p.key)?.host;
+  const tokenHost = (token: string) => selection?.points.find(p => unplaced(p) && firstToken(p.key) === token)?.host || "";
+  function placeToken(token: string, host: string) { if (selection) edit({ points: selection.points.map(p => unplaced(p) && firstToken(p.key) === token ? { ...p, host, selected: !!host && !p.badValue } : p) }); }
+  useEffect(() => {
+    if (!cluster || !plan || (mode !== "new" && mode !== "update") || !unresolvedTokens.length || hintsPlan === plan.id) return;
+    setHintsPlan(plan.id);
+    work("클러스터 서버의 /etc/hosts 에서 { } 값의 서버 찾는 중…", async () => {
+      setHintsError("");
+      let list: statsreg.PlacementHint[] = [];
+      try { list = await StatsPlacementHints(cluster.id, plan.id) || []; } catch (e) { setHintsError(String(e)); return; }
+      const byToken: Record<string, statsreg.PlacementHint> = {};
+      list.forEach(h => { byToken[h.token] = h; });
+      setHints(byToken);
+      setSelection(s => s ? new statsreg.Selection({ ...s, points: s.points.map(p => { const h = byToken[firstToken(p.key) || ""]; return unplaced(p) && !p.host && h?.host ? { ...p, host: h.host, selected: !p.badValue && !p.registered } : p; }) }) : s);
+      setChecked(false);
+    });
+  }, [plan?.id, mode]);
   useEffect(() => EventsOn("statsProgress", (m: string) => setProgress(m)), []);
   // Tester-only build (statsreg.TesterPrefix): "" in a product build.
   const [tester, setTester] = useState("");
@@ -162,7 +183,10 @@ export default function StatsRegistration({ initialHost, cluster, onClose }: { i
       {plan.patternInfo && <p className="stats-muted">{plan.patternInfo}</p>}
       {badCount > 0 && <details className="stats-recovery"><summary>값이 숫자가 아니라 뺀 키 {badCount}개 — 왜 빼나요?</summary><p className="stats-muted">숫자로 수집하는 키인데 지금 값이 빈 값이나 글자입니다(예: SNMP 요청이 아직 없어 빈 값인 API 분당 요청 수). 이대로 등록하면 Collector가 매 주기 이 키에서 오류를 내며 값을 하나도 모으지 못하고, 오류마다 0.1초씩 쉬어 다른 MK119 체크포인트 수집까지 늦어집니다(trunk 실측: 76분에 오류 2,730건). 그래서 빼 두는 것이 안전합니다. 값이 숫자가 되면 다음 「새 키 추가」에서 다시 보이니 그때 넣으세요.</p><ul>{selection.points.filter(p => p.badValue && !p.registered).map(p => <li key={p.key}><code>{p.key}</code></li>)}</ul></details>}
       {(plan.warnings || []).map((w, i) => <p className="stats-warning" key={i}>{w}</p>)}
-      {unresolvedTokens.length > 0 && <details className="stats-recovery"><summary>어느 서버인지 모르는 {"{ }"} 값 — 남은 {unresolvedLeft}/{unresolvedTokens.length}개: 서버를 고르면 그 값이 든 키를 한꺼번에 그 서버에 놓습니다(안 고르면 그 키는 빠짐)</summary><div className="stats-settings">{unresolvedTokens.map(token => <label key={token}>{`{${token}}`}<select disabled={!!busy || !!result} defaultValue="" onChange={e => { const host = e.target.value; edit({ points: selection.points.map(p => !plan.points.find(original => original.key === p.key)?.host && p.key.match(/\{([^{}]+)\}/)?.[1] === token ? { ...p, host, selected: !!host } : p) }); }}><option value="">고르지 않음 (빼기)</option>{selection.servers.filter(h => h.hostname !== "common").map(h => <option key={h.hostname} value={h.hostname}>{h.name} ({h.hostname})</option>)}</select></label>)}</div></details>}
+      {unresolvedTokens.length > 0 && <details className="stats-recovery" open><summary>어느 서버인지 모르는 {"{ }"} 값 — 남은 {unresolvedLeft}/{unresolvedTokens.length}개: 서버를 고르면 그 값이 든 키를 한꺼번에 그 서버에 놓습니다</summary>
+        <p className="stats-muted">{"{liz_log_db_1}"} 처럼 서버 이름이 아닌 별명입니다. <b>각 서버의 /etc/hosts 에서 이 이름이 가리키는 IP 를 보고, 그 IP 의 서버를 고르세요.</b>{cluster ? " 클러스터 서버들의 /etc/hosts 로 찾은 서버를 미리 골라 두었습니다(「hosts 로 추천」) — 다르면 바꾸세요." : " (클러스터에서 연 창이면 클러스터 서버의 /etc/hosts 로 찾아 미리 골라 줍니다.)"} 확인이 안 되면 고르지 마세요 — 그 키는 이번 등록에서 빠지고, 나중에 「새 키 추가」로 넣을 수 있습니다.</p>
+        {hintsError && <p className="stats-warning">/etc/hosts 로 추천하지 못했습니다 — 직접 고르세요. <StatsMessage text={hintsError} /></p>}
+        <div className="stats-settings">{unresolvedTokens.map(token => { const value = tokenHost(token); const hint = hints[token]; return <label key={token}>{`{${token}}`}<select disabled={!!busy || !!result} value={value} onChange={e => placeToken(token, e.target.value)}><option value="">고르지 않음 (빼기)</option>{selection.servers.filter(h => h.hostname !== "common").map(h => <option key={h.hostname} value={h.hostname}>{h.name} ({h.hostname})</option>)}</select>{hint?.host && (value === hint.host ? <small className="stats-badge" title={hint.source}>hosts 로 추천 · {hint.source}</small> : <small className="stats-muted">hosts 로 추천한 서버는 {hint.host} ({hint.source})</small>)}{hint && !hint.host && hint.note && <small className="stats-muted">{hint.note}</small>}</label>; })}</div></details>}
       {movable.length > 0 && <details className="stats-recovery stats-moved" open><summary>옮겨 간 모듈 — 체크포인트 {movable.length}개 · 옮기기 {moveCount}개 선택</summary><p className="stats-muted">모듈이 다른 서버로 옮겨 가서, 등록된 장비와 지금 서버가 다른 체크포인트입니다. 체크하면 체크포인트를 지금 서버의 장비로 옮깁니다(같은 체크포인트 ID·이력 유지). 체크 해제하면 그대로 둡니다.</p><div className="stats-toolbar"><button className="toolbtn" disabled={!!busy || !!result} onClick={() => edit({ points: selection.points.map(p => movable.some(m => m.p.key === p.key) ? { ...p, move: true } : p) })}>모두 옮기기</button><button className="toolbtn" disabled={!!busy || !!result} onClick={() => edit({ points: selection.points.map(p => ({ ...p, move: false })) })}>옮기지 않음</button></div><div className="stats-table-wrap"><table className="stats-table"><thead><tr><th>옮기기</th><th>Redis 키 / 체크포인트</th><th>지금 등록된 곳 → 옮길 서버</th></tr></thead><tbody>{movable.map(({ p, i }) => <tr key={p.key}>
         <td><input aria-label={`${p.key} 옮기기`} type="checkbox" checked={p.move} disabled={!!busy || !!result} onChange={e => point(i, { move: e.target.checked })} /></td>
         <td><code>{p.key}</code><small className="stats-muted">체크포인트 ID {p.checkpointId}</small></td>
@@ -171,7 +195,7 @@ export default function StatsRegistration({ initialHost, cluster, onClose }: { i
       <div className="stats-toolbar"><input aria-label="키 검색" placeholder="Redis 키 또는 이름 검색" value={filter} onChange={e => setFilter(e.target.value)} /><span>{mode === "update" ? <>등록 안 된 키 {selection.points.length - registeredCount}개{newCount ? <> · <b className="stats-new" title="이 환경에서 체크포인트로 등록된 적이 없는 키">🆕 처음 보는 키 {newCount}개</b>(맨 위)</> : ""}</> : `발견 ${selection.points.length - registeredCount}개`} · 선택 {count}개{moveCount ? ` · 옮기기 ${moveCount}개` : ""} · 장비 {deviceCount}개</span><button className="toolbtn" disabled={!!busy || !!result} onClick={() => edit({ points: selection.points.map(p => ({ ...p, selected: !!p.host && !p.registered })) })}>서버가 정해진 키 모두 선택</button><button className="toolbtn" disabled={!!busy || !!result} onClick={() => edit({ points: selection.points.map(p => ({ ...p, selected: false })) })}>모두 해제</button></div>
       <div className="stats-table-wrap"><table className="stats-table"><thead><tr><th>등록</th><th>Redis 키 / 체크포인트 이름</th><th>대상 Device</th><th>자료형 / 주기</th></tr></thead><tbody>{listed.map(({ p, i }) => (!filter || (p.key + p.name).toLowerCase().includes(filter.toLowerCase())) && <tr key={p.key} className={isNew(p) ? "stats-new-row" : undefined}>
         <td><input aria-label={`${p.key} 등록`} type="checkbox" checked={p.selected} disabled={!!busy || !!result} onChange={e => point(i, { selected: e.target.checked })} /></td>
-        <td>{isNew(p) && <span className="stats-new" title="이 환경에서 체크포인트로 등록된 적이 없는 키">🆕 처음 보는 키</span>}<code>{p.key}</code><input aria-label={`${p.key} 이름`} disabled={!!busy || !!result} value={p.name} onChange={e => point(i, { name: e.target.value })} />{p.deleted && <small className="stats-muted">이전에 등록했다가 삭제된 키 — 기본 선택, 새로 생성합니다</small>}{p.remembered && <small className="stats-muted">전에 쓴 포인트 이름·주기를 채움</small>}{p.warning && <small className="stats-warning">{p.warning}</small>}</td>
+        <td>{isNew(p) && <span className="stats-new" title="이 환경에서 체크포인트로 등록된 적이 없는 키">🆕 처음 보는 키</span>}<code>{p.key}</code><input aria-label={`${p.key} 이름`} disabled={!!busy || !!result} value={p.name} onChange={e => point(i, { name: e.target.value })} />{p.deleted && <small className="stats-muted">이전에 등록했다가 삭제된 키 — 기본 선택, 새로 생성합니다</small>}{unplaced(p) && p.host && hints[firstToken(p.key) || ""]?.host === p.host && <small className="stats-badge">hosts 로 추천</small>}{p.remembered && <small className="stats-muted">전에 쓴 포인트 이름·주기를 채움</small>}{p.warning && <small className="stats-warning">{p.warning}</small>}</td>
         <td><select aria-label={`${p.key} 대상 서버`} value={p.host} disabled={!!busy || !!result || !p.key.includes("{")} onChange={e => point(i, { host: e.target.value })}><option value="">서버 고르기 (안 고르면 빠짐)</option>{selection.servers.filter(h => p.key.includes("{") ? h.hostname !== "common" : h.hostname === "common").map(h => <option key={h.hostname} value={h.hostname}>{h.name} ({h.hostname})</option>)}</select></td>
         <td><select aria-label={`${p.key} 자료형`} value={p.format} disabled={!!busy || !!result || !!p.templateId} onChange={e => point(i, { format: Number(e.target.value) })}>{p.templateId !== 0 && p.format < 3 && <option value={p.format}>제품 정의대로: {formatNames[p.format]}</option>}<option value={3}>숫자 (Double)</option><option value={4}>문자열 (String)</option></select><input aria-label={`${p.key} 주기 ms`} type="number" min={1000} step={1000} value={p.interval} disabled={!!busy || !!result} onChange={e => point(i, { interval: Number(e.target.value) })} /><small>ms {p.measure && `· ${p.measure}`}</small></td>
       </tr>)}</tbody></table></div>

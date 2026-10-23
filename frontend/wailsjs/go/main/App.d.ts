@@ -192,6 +192,8 @@ export function StatsManageRedisRetry(arg1:string,arg2:string):Promise<statsreg.
 
 export function StatsManageResend(arg1:string,arg2:string):Promise<statsreg.ManageOutcome>;
 
+export function StatsPlacementHints(arg1:string,arg2:string):Promise<Array<statsreg.PlacementHint>>;
+
 export function StatsRegister(arg1:statsreg.Selection):Promise<statsreg.Result>;
 
 export function StatsRetry(arg1:statsreg.Config,arg2:string):Promise<statsreg.Result>;

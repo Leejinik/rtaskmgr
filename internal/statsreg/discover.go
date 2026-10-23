@@ -180,6 +180,17 @@ type DiscoverResult struct {
 	KafkaReason string                `json:"kafkaReason"`
 	Warnings    []string              `json:"warnings"`
 	Servers     []DiscoverServer      `json:"servers"`
+	// Hosts: every server's /etc/hosts lines, for placing keys whose server part
+	// is an alias such as {liz_log_db_1} (placement.go).
+	Hosts []DiscoverHostsEntry `json:"hosts"`
+}
+
+// DiscoverHostsEntry is one name of one server's /etc/hosts.
+type DiscoverHostsEntry struct {
+	Server   string `json:"server"`   // which server's file
+	Hostname string `json:"hostname"` // that server's `hostname`
+	Name     string `json:"name"`     // lower case
+	IP       string `json:"ip"`
 }
 
 // DiscoverEnv is what the pure builder needs from this PC.
@@ -567,6 +578,14 @@ func BuildDiscovery(dumps []ServerDump, env DiscoverEnv) DiscoverResult {
 			}
 		}
 		b.hosts = append(b.hosts, h)
+		names := make([]string, 0, len(h))
+		for n := range h {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			b.res.Hosts = append(b.res.Hosts, DiscoverHostsEntry{Server: d.label(), Hostname: d.Hostname, Name: n, IP: h[n]})
+		}
 	}
 	ok := 0
 	for _, d := range dumps {

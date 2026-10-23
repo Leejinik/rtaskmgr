@@ -140,3 +140,14 @@ func lookupIP(name string) string {
 	}
 	return ""
 }
+
+// StatsPlacementHints reads the cluster's /etc/hosts (as 「서버에서 불러오기」
+// does, read-only) and recommends a server for every key of the analysis whose
+// server part is an alias like {liz_log_db_1}.
+func (a *App) StatsPlacementHints(clusterID, planID string) ([]statsreg.PlacementHint, error) {
+	res, err := a.StatsDiscoverFromCluster(clusterID)
+	if err != nil {
+		return nil, err
+	}
+	return a.stats.PlacementHints(planID, res)
+}
