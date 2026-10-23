@@ -97,3 +97,7 @@
 .stats-more-block { margin-top: 8px; }
 .stats-footer > div.stats-status-ok { color: #49aa74; }
 .stats-result-anchor { scroll-margin-top: 8px; }
+.stats-unfinished { border: 1px solid #dc973b; border-radius: 6px; padding: 8px 12px; margin: 0 0 12px; font-size: 12px; }
+.stats-unfinished p { margin: 2px 0 6px; }
+.stats-unfinished ul { margin: 0 0 0 18px; }
+.stats-unfinished .linkbtn { margin-left: 6px; }
