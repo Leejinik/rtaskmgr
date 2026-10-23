@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { StatsManageLoad, StatsManagePreview, StatsManageApply, StatsManageResend, StatsManageDeletePreview, StatsManageDelete, StatsManagePending, StatsManageRedisRetry, StatsManageOrphans, StatsManageOrphanDeletePreview } from "../../wailsjs/go/main/App";
 import { statsreg } from "../../wailsjs/go/models";
 import { useEsc } from "../useEsc";
-import StatsMessage from "./statsMessage";
+import StatsMessage, { parseStatsMessage } from "./statsMessage";
 
 // 「기존 등록 관리」: one row per key shape (the server part of the key shown as
 // {서버}), one column per device. A new name typed on a row goes to every
@@ -14,7 +14,26 @@ type RowInput = { name: string; interval: string };
 const rowCurrentName = (r: statsreg.ManagedRow) => new Set(r.points.map(p => p.name)).size === 1 ? r.points[0].name : "";
 const rowIntervals = (r: statsreg.ManagedRow) => Array.from(new Set(r.points.map(p => p.interval)));
 
-export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
+// The one-line summary of the latest result, for the dialog's bottom status line.
+export interface ManageStatus { text: string; warn: boolean }
+
+const short = (text: string) => { const s = parseStatsMessage(text).summary; return s.length > 140 ? s.slice(0, 140) + "…" : s; };
+
+function statusOf(result: statsreg.ManageResult | null, del: statsreg.DeleteResult | null, note: string): ManageStatus | null {
+  if (result) {
+    if (!result.committed) return { text: "적용하지 않음 — " + short(result.message), warn: true };
+    if (result.pending) return { text: "⚠ 이름·주기: DB에는 저장됐지만 수집 서버에 알리지 못했습니다 — 위쪽 결과의 「수집 서버에 다시 알리기」를 누르세요", warn: true };
+    return result.verified ? { text: "✓ 적용 끝 — " + short(result.message), warn: false } : { text: "⚠ 적용 결과를 확인하세요 — " + short(result.message), warn: true };
+  }
+  if (del) {
+    if (del.pending) return { text: "⚠ 삭제: DB에서는 지웠지만 수집 서버에 알리지 못했습니다 — 위쪽 결과의 「수집 서버에 다시 알리기」를 누르세요", warn: true };
+    return del.verified ? { text: "✓ 삭제 끝 — " + short(del.message), warn: false } : { text: "⚠ 삭제 결과를 확인하세요 — " + short(del.message), warn: true };
+  }
+  if (note) return { text: note, warn: note.includes("실패") };
+  return null;
+}
+
+export default function StatsManage({ plan, busy, work, reinspect, onDialog, onStatus }: {
   plan: statsreg.Plan;
   busy: string;
   work: (label: string, fn: () => Promise<void>) => Promise<void>;
@@ -22,6 +41,8 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
   reinspect: () => Promise<statsreg.Plan>;
   // onDialog tells the registration dialog that a confirmation owns Escape.
   onDialog: (open: boolean) => void;
+  // onStatus puts the latest result in the dialog's bottom status line.
+  onStatus: (s: ManageStatus | null) => void;
 }) {
   const [groupId, setGroupId] = useState(plan.existing?.[0]?.groupId || 0);
   const [group, setGroup] = useState<statsreg.ManagedGroup | null>(null);
@@ -52,6 +73,14 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
   function showOutcome(o: statsreg.ManageOutcome) { if (o.kind === "delete") { setDelResult(o.delete); setResult(null); } else { setResult(o.rename); setDelResult(null); } }
   const resend = (id: string) => work("수집 서버에 다시 알리는 중…", async () => showOutcome(await StatsManageResend(plan.id, id)));
   const redisRetry = (id: string) => work("Redis 에 남은 최근값 다시 지우는 중…", async () => { setResult(null); setDelResult(await StatsManageRedisRetry(plan.id, id)); });
+  // 3rd round: a result (even 「DB에는 저장됐지만 알림 0/2건…」) appeared at the top,
+  // out of sight, while the bottom line stayed empty. Bring it into view and say it below too.
+  const resultRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    onStatus(statusOf(result, delResult, note));
+    if (result || delResult || note) resultRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [result, delResult, note]);
+  useEffect(() => () => onStatus(null), []);
   const dialog = !!preview || !!delPreview;
   useEffect(() => { onDialog(dialog); }, [dialog]);
   function cancelDelete() { setDelPreview(null); setConfirm(""); setNote("취소됨 — 아무것도 지우지 않았습니다."); }
@@ -100,7 +129,7 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
   </>;
 
   return <div className="stats-manage">
-    {resultBox}
+    <div ref={resultRef} className="stats-result-anchor">{resultBox}</div>
     {pending.length > 0 && <details className="stats-recovery stats-pending" open><summary>마무리 안 된 작업 {pending.length}개 — DB에는 저장됐지만 수집 서버에 아직 알리지 못했거나, 지운 장비의 Redis 최근값이 남은 이름 변경·삭제</summary>
       <p className="stats-muted">언제 쓰나: 적용·삭제 결과에 「알리지 못했습니다」·「다 지우지 못했습니다」가 나왔을 때, 또는 그 도중에 앱이 꺼졌을 때. 그 작업을 한 때와 같은 MariaDB·Kafka로 연결 확인한 상태에서 누르세요. 「저장 여부 모름」은 누르면 DB부터 확인합니다. 앱을 다시 켜도 이 목록은 남습니다.</p>
       <ul>{pending.map(p => <li key={p.id}>{p.at.slice(0, 16).replace("T", " ")} · {p.kind === "delete" ? "삭제" : "이름·주기 변경"} · 그룹 {p.groupName} · {p.committed ? `수집 서버에 알림 ${p.sent}/${p.total}건 보냄` : "저장 여부 모름"}{p.keysLeft ? ` · Redis 에 남은 최근값 ${p.keysLeft}개` : ""}{p.message && <div className="stats-muted"><StatsMessage text={p.message} /></div>}
