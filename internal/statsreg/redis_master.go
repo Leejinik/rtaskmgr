@@ -2,6 +2,7 @@ package statsreg
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -60,7 +61,8 @@ func openRedisMaster(ctx context.Context, c Config) (*redisConn, error) {
 		}
 		n.Close()
 	}
-	return nil, fmt.Errorf("쓸 수 있는 Redis 마스터를 찾지 못했습니다(%s) — Redis 주소 칸에 마스터가 될 수 있는 서버를 모두 쉼표로 넣으세요", strings.Join(notes, " / "))
+	// 3rd round: the refusal showed 「dial tcp: lookup server_2: no such host」 as is.
+	return nil, &fieldError{"redis.host", "Redis 마스터 없음 — 연결 설정에서 Redis 주소를 확인하세요(마스터가 될 수 있는 서버를 모두 쉼표로)", errors.New(strings.Join(notes, " / "))}
 }
 
 func followNote(next []string) string {
@@ -134,7 +136,7 @@ func redisSummary(ctx context.Context, c Config, servers []Server, read *redisCo
 	}
 	m, e := openRedisMaster(ctx, c)
 	if e != nil {
-		return fmt.Sprintf("Redis %d대 입력 · 마스터 없음 — 장비·그룹 삭제는 할 수 없습니다(Redis 에 남은 최근값을 지울 수 없음). 등록과 이름·주기 수정은 됩니다.\n자세히: %v", n, e), ""
+		return fmt.Sprintf("Redis %d대 입력 · 마스터 없음 — 장비·그룹 삭제는 할 수 없습니다(Redis 에 남은 최근값을 지울 수 없음). 등록과 이름·주기 수정은 됩니다.\n자세히: %s", n, rawError(e)), ""
 	}
 	defer m.Close()
 	return fmt.Sprintf("Redis %d대 입력 · 마스터 %s", n, serverOfAddr(m.Master, servers)), m.Master
@@ -152,4 +154,13 @@ func serverOfAddr(addr string, servers []Server) string {
 		}
 	}
 	return addr
+}
+
+// rawError is the original error under a fieldError (for 「자세히」).
+func rawError(e error) string {
+	var fe *fieldError
+	if errors.As(e, &fe) && fe.err != nil {
+		return fe.err.Error()
+	}
+	return e.Error()
 }
