@@ -19,7 +19,14 @@ export interface ManageStatus { text: string; warn: boolean }
 
 const short = (text: string) => { const s = parseStatsMessage(text).summary; return s.length > 140 ? s.slice(0, 140) + "…" : s; };
 
-function statusOf(result: statsreg.ManageResult | null, del: statsreg.DeleteResult | null, note: string): ManageStatus | null {
+// The latest 「수집 서버에 다시 알리기」 of one record: which try it was and when.
+interface Retry { id: string; n: number; at: string; ok: boolean }
+
+const retryLine = (r: Retry) => r.ok ? `✓ 다시 알리기 성공 (${r.n}번째 시도, ${r.at})` : `⚠ 다시 알리기 실패 (${r.n}번째 시도, ${r.at}) — 네트워크·Kafka 상태를 확인한 뒤 다시 누르세요`;
+
+function statusOf(result: statsreg.ManageResult | null, del: statsreg.DeleteResult | null, note: string, retry: Retry | null): ManageStatus | null {
+  const id = result?.id || del?.id;
+  if (retry && id === retry.id && !retry.ok) return { text: retryLine(retry), warn: true };
   if (result) {
     if (!result.committed) return { text: "적용하지 않음 — " + short(result.message), warn: true };
     if (result.pending) return { text: "⚠ 이름·주기: DB에는 저장됐지만 수집 서버에 알리지 못했습니다 — 위쪽 결과의 「수집 서버에 다시 알리기」를 누르세요", warn: true };
@@ -71,15 +78,25 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog, onS
   const refreshPending = () => StatsManagePending().then(v => setPending(v || [])).catch(() => {});
   useEffect(() => { refreshPending(); }, [result, delResult]);
   function showOutcome(o: statsreg.ManageOutcome) { if (o.kind === "delete") { setDelResult(o.delete); setResult(null); } else { setResult(o.rename); setDelResult(null); } }
-  const resend = (id: string) => work("수집 서버에 다시 알리는 중…", async () => showOutcome(await StatsManageResend(plan.id, id)));
+  // 3rd round (s6-11): a resend that failed again showed the same words, as if nothing happened.
+  const [retry, setRetry] = useState<Retry | null>(null);
+  const resend = (id: string) => work("수집 서버에 다시 알리는 중…", async () => {
+    const n = (retry?.id === id ? retry.n : 0) + 1;
+    const at = () => new Date().toLocaleTimeString("ko-KR", { hour12: false });
+    try {
+      const o = await StatsManageResend(plan.id, id);
+      setRetry({ id, n, at: at(), ok: !(o.kind === "delete" ? o.delete.pending : o.rename.pending) });
+      showOutcome(o);
+    } catch (e) { setRetry({ id, n, at: at(), ok: false }); throw e; }
+  });
   const redisRetry = (id: string) => work("Redis 에 남은 최근값 다시 지우는 중…", async () => { setResult(null); setDelResult(await StatsManageRedisRetry(plan.id, id)); });
   // 3rd round: a result (even 「DB에는 저장됐지만 알림 0/2건…」) appeared at the top,
   // out of sight, while the bottom line stayed empty. Bring it into view and say it below too.
   const resultRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    onStatus(statusOf(result, delResult, note));
+    onStatus(statusOf(result, delResult, note, retry));
     if (result || delResult || note) resultRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
-  }, [result, delResult, note]);
+  }, [result, delResult, note, retry]);
   useEffect(() => () => onStatus(null), []);
   const dialog = !!preview || !!delPreview;
   useEffect(() => { onDialog(dialog); }, [dialog]);
@@ -115,6 +132,7 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog, onS
 
   const resultBox = <>
     {result && <div className={result.verified ? "stats-success stats-result" : "stats-warning stats-result"} role="status">
+      {retry?.id === result.id && <div><b>{retryLine(retry)}</b></div>}
       <div><b>{result.committed ? "적용 결과" : "적용하지 않음"}</b> — <StatsMessage text={result.message} /></div>
       {result.committed && result.watched > 0 && <p>수집 확인: {result.collected}/{result.watched}개{result.missing?.length ? ` · 값이 안 들어온 체크포인트 ${result.missing.length}개` : ""}</p>}
       {result.conflicts?.length > 0 && <details open><summary>불러온 뒤 다른 곳(admin 등)에서 바뀌어 건너뛴 {result.conflicts.length}개 — 덮어쓰지 않았습니다</summary><ul>{result.conflicts.map((c, i) => <li key={i}>{c}</li>)}</ul></details>}
@@ -122,6 +140,7 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog, onS
     </div>}
     {note && <p className="stats-muted stats-result" role="status">{note}</p>}
     {delResult && <div className={delResult.verified ? "stats-success stats-result" : "stats-warning stats-result"} role="status">
+      {retry?.id === delResult.id && <div><b>{retryLine(retry)}</b></div>}
       <div><b>삭제 결과</b> — <StatsMessage text={delResult.message} /></div>
       {delResult.pending && <button className="toolbtn" disabled={!!busy} onClick={() => resend(delResult.id)}>수집 서버에 다시 알리기 (DB는 다시 바꾸지 않음)</button>}
       {delResult.committed && delResult.notified && !delResult.verified && <button className="toolbtn" disabled={!!busy} onClick={() => redisRetry(delResult.id)}>Redis 최근값 다시 지우기 (지운 체크포인트 것)</button>}
