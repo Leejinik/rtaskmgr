@@ -2373,6 +2373,7 @@ export namespace statsreg {
 	    newName: string;
 	    oldInterval: number;
 	    newInterval: number;
+	    suspicious: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new PointChange(source);
@@ -2390,6 +2391,7 @@ export namespace statsreg {
 	        this.newName = source["newName"];
 	        this.oldInterval = source["oldInterval"];
 	        this.newInterval = source["newInterval"];
+	        this.suspicious = source["suspicious"];
 	    }
 	}
 	export class ManagePreview {
@@ -2452,6 +2454,7 @@ export namespace statsreg {
 	    measure: string;
 	    host: string;
 	    rawName: boolean;
+	    serverPart: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ManagedPoint(source);
@@ -2470,11 +2473,13 @@ export namespace statsreg {
 	        this.measure = source["measure"];
 	        this.host = source["host"];
 	        this.rawName = source["rawName"];
+	        this.serverPart = source["serverPart"];
 	    }
 	}
 	export class ManagedRow {
 	    shape: string;
 	    template: string;
+	    templateWarning: string;
 	    points: ManagedPoint[];
 	    devices: number;
 	    rawName: boolean;
@@ -2487,6 +2492,7 @@ export namespace statsreg {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.shape = source["shape"];
 	        this.template = source["template"];
+	        this.templateWarning = source["templateWarning"];
 	        this.points = this.convertValues(source["points"], ManagedPoint);
 	        this.devices = source["devices"];
 	        this.rawName = source["rawName"];

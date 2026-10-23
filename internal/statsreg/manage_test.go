@@ -29,14 +29,14 @@ func TestManagedShapeCollapsesTheServerPart(t *testing.T) {
 	hosts := map[string]string{"server_1": "server_1", "10.0.0.1": "server_1", "server_2": "server_2"}
 	mods := map[string]string{"16": "server_2", "3": "server_1"}
 	cases := []struct{ key, host, want string }{
-		{"liz.stats.server.{server_1}.free.memory", "server_1", "liz.stats.server.{서버}.free.memory"},
-		{"liz.stats.server.{server_2}.free.memory", "server_2", "liz.stats.server.{서버}.free.memory"},
-		{"liz.stats.server.{server_1}.{eth0}.network.traffic", "server_1", "liz.stats.server.{서버}.{eth0}.network.traffic"},
-		{"liz.stats.collector.{16}.cpu", "server_2", "liz.stats.collector.{서버}.cpu"},
-		{"liz.stats.api.{3}.snmp.{3}.rpm", "server_1", "liz.stats.api.{서버}.snmp.{3}.rpm"},
-		{"liz.stats.x.{eth9}.{10.0.0.1}.y", "server_1", "liz.stats.x.{eth9}.{서버}.y"},
+		{"liz.stats.server.{server_1}.free.memory", "server_1", "liz.stats.server.{서버별}.free.memory"},
+		{"liz.stats.server.{server_2}.free.memory", "server_2", "liz.stats.server.{서버별}.free.memory"},
+		{"liz.stats.server.{server_1}.{eth0}.network.traffic", "server_1", "liz.stats.server.{서버별}.{eth0}.network.traffic"},
+		{"liz.stats.collector.{16}.cpu", "server_2", "liz.stats.collector.{서버별}.cpu"},
+		{"liz.stats.api.{3}.snmp.{3}.rpm", "server_1", "liz.stats.api.{서버별}.snmp.{3}.rpm"},
+		{"liz.stats.x.{eth9}.{10.0.0.1}.y", "server_1", "liz.stats.x.{eth9}.{서버별}.y"},
 		{"liz.stats.vip.location", "common", "liz.stats.vip.location"},
-		{"liz.stats.logdb.{lizlogdb01}.status", "", "liz.stats.logdb.{서버}.status"},
+		{"liz.stats.logdb.{lizlogdb01}.status", "", "liz.stats.logdb.{서버별}.status"},
 	}
 	for _, c := range cases {
 		if got := managedShape(c.key, c.host, hosts, mods); got != c.want {
@@ -115,7 +115,7 @@ func TestLoadManagedGroupsByKeyShape(t *testing.T) {
 	for _, r := range g.Rows {
 		shapes = append(shapes, r.Shape)
 	}
-	want := []string{"liz.stats.cachedb.{서버}.cpu", "liz.stats.server.{서버}.free.memory", "liz.stats.vip.location"}
+	want := []string{"liz.stats.cachedb.{서버별}.cpu", "liz.stats.server.{서버별}.free.memory", "liz.stats.vip.location"}
 	if !reflect.DeepEqual(shapes, want) {
 		t.Fatalf("shapes %v", shapes)
 	}
@@ -152,8 +152,8 @@ func TestResolveEditFillsNamePerServer(t *testing.T) {
 	setTester(t, "")
 	s := loadTestSession(t)
 	plan, errs, warns := resolveEdit(s, ManageEdit{Rows: []RowEdit{
-		{Shape: "liz.stats.server.{서버}.free.memory", Name: "{Host} 남은 메모리", Interval: 30000, Overrides: []PointOverride{{CheckpointID: 2, Name: "서버2 메모리"}}},
-		{Shape: "liz.stats.cachedb.{서버}.cpu", Name: "CacheDB CPU"},
+		{Shape: "liz.stats.server.{서버별}.free.memory", Name: "{Host} 남은 메모리", Interval: 30000, Overrides: []PointOverride{{CheckpointID: 2, Name: "서버2 메모리"}}},
+		{Shape: "liz.stats.cachedb.{서버별}.cpu", Name: "CacheDB CPU"},
 	}, Devices: []DeviceEdit{{DeviceID: 300, Name: "공통"}}})
 	if len(errs) != 0 {
 		t.Fatalf("errors %v", errs)
@@ -179,10 +179,10 @@ func TestResolveEditRefusesWhatCannotBeApplied(t *testing.T) {
 	s := loadTestSession(t)
 	_, errs, _ := resolveEdit(s, ManageEdit{Rows: []RowEdit{
 		{Shape: "liz.stats.vip.location", Name: "{Host} VIP"},                                           // common device: no server name
-		{Shape: "liz.stats.server.{서버}.free.memory", Interval: 500},                                     // too short
-		{Shape: "liz.stats.cachedb.{서버}.cpu", Name: " CPU"},                                             // surrounding space
+		{Shape: "liz.stats.server.{서버별}.free.memory", Interval: 500},                                     // too short
+		{Shape: "liz.stats.cachedb.{서버별}.cpu", Name: " CPU"},                                             // surrounding space
 		{Shape: "no.such.shape", Name: "x"},                                                             // stale screen
-		{Shape: "liz.stats.cachedb.{서버}.cpu", Overrides: []PointOverride{{CheckpointID: 1, Name: "x"}}}, // repeated / foreign
+		{Shape: "liz.stats.cachedb.{서버별}.cpu", Overrides: []PointOverride{{CheckpointID: 1, Name: "x"}}}, // repeated / foreign
 	}, Devices: []DeviceEdit{{DeviceID: 100, Name: "dup"}, {DeviceID: 200, Name: "DUP"}, {DeviceID: 999, Name: "x"}}})
 	if len(errs) != 7 {
 		t.Fatalf("want 7 errors, got %d: %v", len(errs), errs)
@@ -192,7 +192,7 @@ func TestResolveEditRefusesWhatCannotBeApplied(t *testing.T) {
 func TestResolveEditWarnsAboutSameNamesAndHostDrift(t *testing.T) {
 	setTester(t, "")
 	s := loadTestSession(t)
-	_, errs, warns := resolveEdit(s, ManageEdit{Rows: []RowEdit{{Shape: "liz.stats.cachedb.{서버}.cpu", Name: "Free Memory"}}, Devices: []DeviceEdit{{DeviceID: 100, Name: "main"}}})
+	_, errs, warns := resolveEdit(s, ManageEdit{Rows: []RowEdit{{Shape: "liz.stats.cachedb.{서버별}.cpu", Name: "Free Memory"}}, Devices: []DeviceEdit{{DeviceID: 100, Name: "main"}}})
 	if len(errs) != 0 || len(warns) != 2 || !strings.Contains(warns[0], "2개가 됩니다") || !strings.Contains(warns[1], "키로 추정") {
 		t.Fatalf("errs %v warns %v", errs, warns)
 	}
@@ -605,11 +605,11 @@ func TestDevicesInAnotherGroupAreLocked(t *testing.T) {
 		t.Fatalf("locks: %+v / %v", s.devices, s.Group.Warnings)
 	}
 	// A row edit skips the shared device (warning); naming it explicitly is an error.
-	plan, errs, warns := resolveEdit(s, ManageEdit{Rows: []RowEdit{{Shape: "liz.stats.server.{서버}.free.memory", Name: "Mem"}}})
+	plan, errs, warns := resolveEdit(s, ManageEdit{Rows: []RowEdit{{Shape: "liz.stats.server.{서버별}.free.memory", Name: "Mem"}}})
 	if len(errs) != 0 || len(plan.points) != 1 || plan.points[0].CheckpointID != 1 || len(warns) != 1 {
 		t.Fatalf("row edit: %+v %v %v", plan.points, errs, warns)
 	}
-	_, errs, _ = resolveEdit(s, ManageEdit{Rows: []RowEdit{{Shape: "liz.stats.server.{서버}.free.memory", Overrides: []PointOverride{{CheckpointID: 2, Name: "x"}}}}, Devices: []DeviceEdit{{DeviceID: 200, Name: "y"}}})
+	_, errs, _ = resolveEdit(s, ManageEdit{Rows: []RowEdit{{Shape: "liz.stats.server.{서버별}.free.memory", Overrides: []PointOverride{{CheckpointID: 2, Name: "x"}}}}, Devices: []DeviceEdit{{DeviceID: 200, Name: "y"}}})
 	if len(errs) != 2 {
 		t.Fatalf("explicit edits of a shared device: %v", errs)
 	}

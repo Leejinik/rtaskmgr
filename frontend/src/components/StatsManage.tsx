@@ -122,8 +122,8 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
         <button className="toolbtn" disabled={!!busy || (!editedRows && !editedDevices)} onClick={clearInputs}>입력 지우기</button>
       </div>
       <details className="stats-help"><summary>새 이름 칸 쓰는 법</summary>
-        <p>한 줄은 <b>키 모양</b> 하나입니다 — 서버 이름처럼 키의 {"{ }"} 안만 다른 키를 한 줄로 묶었습니다(예: <code>liz.stats.server.{"{서버}"}.free.memory</code>). 줄의 「새 이름」은 그 줄의 <b>모든 서버</b> 체크포인트에 들어갑니다. 서버마다 다르게 하려면 ▸ 를 눌러 펼친 뒤 서버별 칸에 쓰세요(서버별 칸이 우선).</p>
-        <p>이름에 넣으면 서버마다 바뀌는 칸: <code>{"{Host}"}</code> 서버 이름(첫 글자 대문자, Server_1) · <code>{"{host}"}</code> 서버 이름 그대로 · <code>{"{n}"}</code> 서버 번호(server_3 → 3) · <code>{"{t1}"}</code> <code>{"{t2}"}</code>… 키의 첫 번째·두 번째 {"{ }"} 안 값(예: 네트워크 카드 이름). 빈 칸은 바꾸지 않습니다. 주기는 ms(1000 = 1초)이고, admin 처럼 수집 주기·보관 주기를 같이 바꿉니다.</p>
+        <p>한 줄은 <b>서버만 다르고 나머지가 같은 키</b>를 묶은 것입니다(예: <code>liz.stats.server.{"{서버별}"}.free.memory</code> — {"{서버별}"} 자리에 서버마다 다른 값이 들어 있음). 줄의 「새 이름」은 그 줄에 있는 <b>모든 서버</b>의 체크포인트에 들어갑니다. 서버마다 다르게 하려면 ▸ 를 눌러 펼친 뒤 서버별 칸에 쓰세요(서버별 칸이 우선).</p>
+        <p>이름에 넣으면 서버마다 알아서 바뀌는 자리: <code>{"{서버}"}</code> 서버 이름 그대로(server_1) · <code>{"{서버대문자}"}</code> 첫 글자만 대문자(Server_1) · <code>{"{서버번호}"}</code> 서버 이름 끝 번호(server_3 → 3) · <code>{"{키1}"}</code> <code>{"{키2}"}</code>… 키의 첫 번째·두 번째 {"{ }"} 안 값(예: 모듈 번호, 네트워크 카드 이름). 「지금 이름에서 시작」은 서버마다 다른 부분을 이 자리로 바꿔 넣습니다. 빈 칸은 바꾸지 않습니다. 주기는 ms(1000 = 1초)이고, admin 처럼 수집 주기·보관 주기를 같이 바꿉니다.</p>
         <p>바꾼 이름·주기는 이 PC가 기억해 두었다가, 다음에 새로 등록하거나 새 키를 추가할 때 같은 모양의 키에 미리 채웁니다.</p>
       </details>
       <div className="stats-table-wrap"><table className="stats-table stats-manage-table">
@@ -132,13 +132,13 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
           const cur = rowCurrentName(r);
           const ivs = rowIntervals(r);
           const v = rows[r.shape] || { name: "", interval: "" };
-          const partial = r.devices < (r.shape.includes("{서버}") ? hasServers : 1);
+          const partial = r.devices < (r.shape.includes("{서버별}") ? hasServers : 1);
           return [<tr key={r.shape} className={edited(r) ? "stats-edited-row" : undefined}>
             <td><button className="linkbtn" aria-label={`${r.shape} 서버별로 펼치기`} aria-expanded={!!open[r.shape]} onClick={() => setOpen(o => ({ ...o, [r.shape]: !o[r.shape] }))}>{open[r.shape] ? "▾" : "▸"}</button></td>
-            <td><code>{r.shape}</code>{cur ? <span>{cur}</span> : <span className="stats-muted">서버마다 이름이 다름 — 펼쳐서 보기</span>}{r.rawName && <small className="stats-badge">이름이 키 그대로</small>}{partial && <small className="stats-badge">{r.devices}/{r.shape.includes("{서버}") ? hasServers : 1} 서버에만 있음</small>}</td>
+            <td><code>{r.shape}</code>{cur ? <span>{cur}</span> : <span className="stats-muted">서버마다 이름이 다름 — 펼쳐서 보기</span>}{r.rawName && <small className="stats-badge">이름이 키 그대로</small>}{partial && <small className="stats-badge">{r.devices}/{r.shape.includes("{서버별}") ? hasServers : 1} 서버에만 있음</small>}</td>
             {devices.map(d => { const ps = r.points.filter(p => p.deviceId === d.deviceId); return <td key={d.deviceId} className="stats-cell">{ps.length === 0 ? <span className="stats-muted">—</span> : <>✓{ps.length > 1 ? ` ${ps.length}개` : ""}<small title={ps.map(p => `${p.key} → ${p.name}`).join("\n")}>{ps.map(p => overrides[p.checkpointId] || p.name).join(", ")}</small></>}</td>; })}
             <td><input aria-label={`${r.shape} 새 주기 ms`} type="number" min={1000} step={1000} placeholder={ivs.length === 1 ? String(ivs[0]) : "서로 다름"} value={v.interval} disabled={!!busy} onChange={e => setRow(r.shape, { interval: e.target.value })} /></td>
-            <td><input aria-label={`${r.shape} 새 이름`} placeholder={cur || "새 이름"} value={v.name} disabled={!!busy} onChange={e => setRow(r.shape, { name: e.target.value })} />{!v.name && r.template && <button className="linkbtn" disabled={!!busy} onClick={() => setRow(r.shape, { name: r.template })}>지금 이름에서 시작 ({r.template})</button>}</td>
+            <td><input aria-label={`${r.shape} 새 이름`} placeholder={cur || "새 이름"} value={v.name} disabled={!!busy} onChange={e => setRow(r.shape, { name: e.target.value })} />{!v.name && r.template && <button className="linkbtn" disabled={!!busy} title="지금 이름을 틀로 바꿔 넣습니다. 서버마다 다른 부분은 {서버}·{서버번호}·{키1} 자리가 되어 서버별로 채워집니다" onClick={() => setRow(r.shape, { name: r.template })}>지금 이름에서 시작 ({r.template})</button>}{r.templateWarning && <small className="stats-warning">⚠ {r.templateWarning}</small>}</td>
           </tr>,
           open[r.shape] && <tr key={r.shape + " open"} className="stats-open-row"><td></td><td colSpan={devices.length + 3}>{r.points.map(p => <label key={p.checkpointId} className="stats-override"><span>{devices.find(d => d.deviceId === p.deviceId)?.name} · <code>{p.key}</code> · 체크포인트 {p.checkpointId} · 지금 이름 「{p.name}」 · {p.interval} ms</span><input aria-label={`체크포인트 ${p.checkpointId} 새 이름`} placeholder="이 서버만 다른 이름 (비우면 줄의 새 이름)" value={overrides[p.checkpointId] || ""} disabled={!!busy} onChange={e => setOverrides(o => ({ ...o, [p.checkpointId]: e.target.value }))} /></label>)}</td></tr>];
         })}</tbody>
@@ -160,7 +160,7 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
       {preview.warnings?.map((w, i) => <p className="stats-warning" key={"w" + i}>⚠ {w}</p>)}
       <div className="stats-table-wrap"><table className="stats-table"><thead><tr><th>장비</th><th>키</th><th>지금 → 바뀐 뒤</th></tr></thead><tbody>
         {preview.devices.map(d => <tr key={"d" + d.deviceId}><td>장비 이름</td><td>ID {d.deviceId}</td><td>{d.oldName} → <b>{d.newName}</b></td></tr>)}
-        {preview.points.map(c => <tr key={c.checkpointId}><td>{c.deviceName}</td><td><code>{c.key}</code></td><td>{c.oldName !== c.newName ? <>{c.oldName} → <b>{c.newName}</b></> : c.oldName}{c.oldInterval !== c.newInterval && <small>주기 {c.oldInterval} → <b>{c.newInterval}</b> ms</small>}</td></tr>)}
+        {preview.points.map(c => <tr key={c.checkpointId} className={c.suspicious ? "stats-suspicious-row" : undefined}><td>{c.deviceName}</td><td><code>{c.key}</code></td><td>{c.oldName !== c.newName ? <>{c.oldName} → <b>{c.newName}</b></> : c.oldName}{c.suspicious && <small className="stats-warning">⚠ 다른 서버의 값이 들어 있습니다 — 이 서버의 이름이 맞는지 확인하세요</small>}{c.oldInterval !== c.newInterval && <small>주기 {c.oldInterval} → <b>{c.newInterval}</b> ms</small>}</td></tr>)}
       </tbody></table></div>
       <div className="stats-update-buttons"><button className="toolbtn primary" disabled={!!busy || !preview.id} onClick={() => work("적용 중…", async () => { const id = preview.id; setPreview(null); const r = await StatsManageApply(id); setResult(r); if (r.committed) { clearInputs(); try { setGroup(await StatsManageLoad(plan.id, groupId)); } catch (e) { setGroup(null); setResult({ ...r, message: r.message + ` (목록을 다시 불러오지 못했습니다: ${e} — 「연결 설정」에서 다시 연결 확인하세요)` } as statsreg.ManageResult); } } })}>적용</button><button className="toolbtn" disabled={!!busy} onClick={() => setPreview(null)}>취소</button>{!preview.id && <span className="stats-muted">위 ⛔ 항목을 고쳐야 적용할 수 있습니다.</span>}</div>
     </div></div>}

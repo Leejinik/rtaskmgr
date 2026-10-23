@@ -88,3 +88,4 @@
 .stats-dialog input.stats-bad, .modal .stats-fields input.stats-bad { border-color: #e5534b !important; box-shadow: 0 0 0 2px rgba(229, 83, 75, 0.35); }
 .stats-more { display: inline-block; margin-left: 8px; font-size: 11px; color: var(--text-mute); }
 .stats-more code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 760px; }
+.stats-suspicious-row td { background: rgba(229, 83, 75, 0.12); }

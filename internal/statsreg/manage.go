@@ -89,17 +89,23 @@ type ManagedPoint struct {
 	Host         string `json:"host"`
 	// RawName: the name is still the Redis key / driver code (registered without a name).
 	RawName bool `json:"rawName"`
+	// ServerPart: the value of the key's server part (hostname, IP or module id).
+	ServerPart string `json:"serverPart"`
 }
 
-// ManagedRow is one key shape: the key with its server part replaced by {서버},
-// e.g. liz.stats.server.{서버}.free.memory, with its checkpoint on every device.
+// ManagedRow is one key shape: the key with its server part replaced by {서버별},
+// e.g. liz.stats.server.{서버별}.free.memory, with its checkpoint on every device.
 type ManagedRow struct {
 	Shape string `json:"shape"`
-	// Template: the current name as a name pattern ({Host} …), majority over the devices.
-	Template string         `json:"template"`
-	Points   []ManagedPoint `json:"points"`
-	Devices  int            `json:"devices"`
-	RawName  bool           `json:"rawName"`
+	// Template: the current name as a name pattern in screen words ({서버} …),
+	// majority over the devices, with every server's own part as a placeholder.
+	Template string `json:"template"`
+	// TemplateWarning: the pattern does not fit every server (a server's own part
+	// is left as text, or a placeholder cannot be filled) — said next to the button.
+	TemplateWarning string         `json:"templateWarning"`
+	Points          []ManagedPoint `json:"points"`
+	Devices         int            `json:"devices"`
+	RawName         bool           `json:"rawName"`
 }
 
 type ManagedGroup struct {
@@ -148,6 +154,9 @@ type PointChange struct {
 	NewName      string `json:"newName"`
 	OldInterval  int    `json:"oldInterval"`
 	NewInterval  int    `json:"newInterval"`
+	// Suspicious: the new name holds another server's own value (its hostname or
+	// the server part of its key) — 2nd round: 「지금 이름에서 시작」 copied {11} to every server.
+	Suspicious bool `json:"suspicious"`
 }
 type DeviceChange struct {
 	DeviceID int64  `json:"deviceId"`
@@ -392,6 +401,13 @@ func managedShape(key, host string, hosts, mods map[string]string) string {
 	if len(locs) == 0 {
 		return key
 	}
+	l := locs[serverPartIndex(key, host, hosts, mods)]
+	return key[:l[0]] + "{서버별}" + key[l[1]:]
+}
+
+// serverPartIndex is the index of the placeholder naming host (0 when unknown).
+func serverPartIndex(key, host string, hosts, mods map[string]string) int {
+	locs := placeholder.FindAllStringSubmatchIndex(key, -1)
 	pick := 0
 	if host != "" && host != "common" {
 		for i, l := range locs {
@@ -402,8 +418,7 @@ func managedShape(key, host string, hosts, mods map[string]string) string {
 			}
 		}
 	}
-	l := locs[pick]
-	return key[:l[0]] + "{서버}" + key[l[1]:]
+	return pick
 }
 
 func loadManaged(ctx context.Context, q queryer, groupID, driverID int64, plan Plan, mods []module) (*manageSession, error) {
@@ -535,6 +550,9 @@ func loadManaged(ctx context.Context, q queryer, groupID, driverID int64, plan P
 	for _, p := range points {
 		p.Host = byDevice[p.DeviceID].Host
 		shape := managedShape(p.Key, p.Host, hosts, modHost)
+		if toks := keyTokens(p.Key); len(toks) > 0 {
+			p.ServerPart = toks[serverPartIndex(p.Key, p.Host, hosts, modHost)]
+		}
 		if p.Key == "" {
 			shape = fmt.Sprintf("(키 없음 · 체크포인트 %d)", p.CheckpointID)
 		}
@@ -558,17 +576,11 @@ func loadManaged(ctx context.Context, q queryer, groupID, driverID int64, plan P
 			return byDevice[r.Points[i].DeviceID].Name < byDevice[r.Points[j].DeviceID].Name
 		})
 		devices := map[int64]bool{}
-		votes := map[string]int{}
 		for _, p := range r.Points {
 			devices[p.DeviceID] = true
-			votes[generalize(p.Name, p.Key, p.Host)]++
 		}
 		r.Devices = len(devices)
-		for t, n := range votes {
-			if n > votes[r.Template] || (n == votes[r.Template] && t < r.Template) {
-				r.Template = t
-			}
-		}
+		r.Template, r.TemplateWarning = rowTemplate(r.Points, hosts, modHost)
 		m.Group.Rows = append(m.Group.Rows, *r)
 	}
 	sort.SliceStable(devs, func(i, j int) bool { return devs[i].Name < devs[j].Name })
@@ -585,10 +597,112 @@ var namePlaceholder = regexp.MustCompile(`\{(Host|host|n|t\d+)\}`)
 // resolveName fills a name pattern for one checkpoint; a name without
 // placeholders is taken as it is.
 func resolveName(tmpl, key, host string) (string, bool) {
+	tmpl = screenToPattern(tmpl)
 	if !namePlaceholder.MatchString(tmpl) {
 		return tmpl, true
 	}
 	return render(tmpl, key, host)
+}
+
+// Name placeholders in screen words ↔ the registration patterns' own
+// ({Host} {host} {n} {t1}…, kept in the pattern file and docs/stats-name-patterns.md).
+var (
+	screenKeyPart  = regexp.MustCompile(`\{키(\d+)\}`)
+	patternKeyPart = regexp.MustCompile(`\{t(\d+)\}`)
+)
+
+func screenToPattern(s string) string {
+	s = strings.NewReplacer("{서버대문자}", "{Host}", "{서버번호}", "{n}", "{서버}", "{host}").Replace(s)
+	return screenKeyPart.ReplaceAllString(s, "{t$1}")
+}
+
+func patternToScreen(s string) string {
+	s = strings.NewReplacer("{Host}", "{서버대문자}", "{n}", "{서버번호}", "{host}", "{서버}").Replace(s)
+	return patternKeyPart.ReplaceAllString(s, "{키$1}")
+}
+
+// bounded: v occurs in s as a whole value (not inside a longer word or number).
+func bounded(s, v string) bool {
+	if v == "" {
+		return false
+	}
+	return regexp.MustCompile(`(^|[^0-9A-Za-z])` + regexp.QuoteMeta(v) + `($|[^0-9A-Za-z])`).MatchString(s)
+}
+
+// ownValues: what is particular to the server of p (hostname, the key's server part).
+func ownValues(p ManagedPoint) []string {
+	out := []string{}
+	for _, v := range []string{p.Host, p.ServerPart} {
+		if v != "" && v != "common" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// foreignValue returns another server's own value found in name ("" if none).
+func foreignValue(name string, p ManagedPoint, row []ManagedPoint) string {
+	own := map[string]bool{}
+	for _, v := range ownValues(p) {
+		own[v] = true
+	}
+	for _, q := range row {
+		if q.DeviceID == p.DeviceID {
+			continue
+		}
+		for _, v := range ownValues(q) {
+			if !own[v] && bounded(name, v) {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+// rowTemplate turns the row's current names into one pattern: generalize() puts
+// the hostname, its number and the key's other values in placeholders; the key's
+// server part (e.g. a module id like {11}) is put in its {키N} too, which
+// generalize leaves as text when it is a number. Majority over the devices; the
+// warning says when the pattern still copies one server's value to the others.
+func rowTemplate(points []ManagedPoint, hosts, mods map[string]string) (string, string) {
+	votes := map[string]int{}
+	for _, p := range points {
+		t := generalize(p.Name, p.Key, p.Host)
+		if toks := keyTokens(p.Key); len(toks) > 0 && p.ServerPart != "" {
+			i := serverPartIndex(p.Key, p.Host, hosts, mods)
+			re := regexp.MustCompile(`(^|[^0-9A-Za-z])` + regexp.QuoteMeta(p.ServerPart) + `($|[^0-9A-Za-z])`)
+			t = re.ReplaceAllString(t, "${1}"+fmt.Sprintf("{t%d}", i+1)+"${2}")
+		}
+		votes[t]++
+	}
+	best := ""
+	for t, n := range votes {
+		if n > votes[best] || (n == votes[best] && t < best) {
+			best = t
+		}
+	}
+	if best == "" {
+		return "", ""
+	}
+	unfilled, copied := 0, []string{}
+	for _, p := range points {
+		name, ok := render(best, p.Key, p.Host)
+		if !ok {
+			unfilled++
+			continue
+		}
+		if v := foreignValue(name, p, points); v != "" {
+			copied = append(copied, v)
+		}
+	}
+	warn := ""
+	switch {
+	case len(copied) > 0:
+		warn = fmt.Sprintf("이 틀에는 서버마다 달라야 할 값(%s)이 글자 그대로 들어 있어 다른 서버에도 같은 값이 들어갑니다 — 그 부분을 {서버}·{서버번호}·{키1} 같은 자리로 바꾸세요", strings.Join(uniq(copied), ", "))
+	case unfilled > 0:
+		warn = fmt.Sprintf("서버 %d대는 이 틀의 자리를 채울 수 없습니다(서버를 모름) — 펼쳐서 따로 입력하세요", unfilled)
+	}
+	return patternToScreen(best), warn
 }
 
 func validName(n string) bool {
@@ -605,6 +719,7 @@ func resolveEdit(m *manageSession, edit ManageEdit) (managePlan, []string, []str
 	}
 	devName := func(id int64) string { return m.devices[id].Name }
 	seenShape, skipped := map[string]bool{}, map[int64]bool{}
+	suspicious := []string{}
 	for _, re := range edit.Rows {
 		row, ok := rows[re.Shape]
 		if !ok || seenShape[re.Shape] {
@@ -668,8 +783,18 @@ func resolveEdit(m *manageSession, edit ManageEdit) (managePlan, []string, []str
 			if name == p.Name && interval == p.Interval {
 				continue
 			}
-			plan.points = append(plan.points, PointChange{CheckpointID: p.CheckpointID, DeviceID: p.DeviceID, InterfaceID: p.InterfaceID, DeviceName: devName(p.DeviceID), Key: p.Key, Shape: row.Shape, OldName: p.Name, NewName: name, OldInterval: p.Interval, NewInterval: interval})
+			c := PointChange{CheckpointID: p.CheckpointID, DeviceID: p.DeviceID, InterfaceID: p.InterfaceID, DeviceName: devName(p.DeviceID), Key: p.Key, Shape: row.Shape, OldName: p.Name, NewName: name, OldInterval: p.Interval, NewInterval: interval}
+			if name != p.Name {
+				if v := foreignValue(name, p, row.Points); v != "" {
+					c.Suspicious = true
+					suspicious = append(suspicious, fmt.Sprintf("%s(%s)", devName(p.DeviceID), v))
+				}
+			}
+			plan.points = append(plan.points, c)
 		}
+	}
+	if len(suspicious) > 0 {
+		warns = append(warns, fmt.Sprintf("새 이름에 다른 서버의 값이 들어간 체크포인트 %d개: %s — 미리보기에서 ⚠ 표시된 줄을 확인하세요. 서버마다 다른 부분은 {서버}·{서버번호}·{키1} 자리로 쓰면 서버별로 채워집니다", len(suspicious), strings.Join(firstN(suspicious, 8), ", ")))
 	}
 	// Same name twice on one device after the change (admin allows it; easy to mix up).
 	final := map[int64]map[string]int{}
