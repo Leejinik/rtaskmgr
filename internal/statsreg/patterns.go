@@ -258,7 +258,7 @@ func (s *Service) applyPatterns(p *Plan) {
 		applied++
 	}
 	if applied > 0 || placed > 0 {
-		p.PatternInfo = fmt.Sprintf("전에 쓴 이름·주기를 키 %d개에 미리 채웠습니다(이 PC가 기억하는 키 모양 %d종 — 키 모양: 서버 이름처럼 { } 안만 다른 키를 한 종류로 본 것). 전에 직접 서버를 고른 키 %d개는 같은 서버에 놓았습니다. 고친 이름·주기는 등록이 성공하면 다시 기억합니다.", applied, len(f.Patterns), placed)
+		p.PatternInfo = fmt.Sprintf("전에 쓴 포인트 이름·주기를 키 %d개에 미리 채웠습니다(이 PC가 기억하는 키 %d종 — 서버 부분만 다른 키는 한 종류). 장비 이름은 기억하지 않습니다. 전에 직접 서버를 고른 키 %d개는 같은 서버에 놓았습니다. 고친 포인트 이름·주기는 등록이 성공하면 다시 기억합니다.", applied, len(f.Patterns), placed)
 	}
 }
 

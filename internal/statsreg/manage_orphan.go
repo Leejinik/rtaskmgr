@@ -97,7 +97,7 @@ func (s *Service) ManageOrphans(ctx context.Context, planID string) ([]OrphanDev
 // buildOrphanDelete is buildDelete for one device in no group.
 func buildOrphanDelete(ctx context.Context, q queryer, typeID, driverID, deviceID int64, lock bool) (deletePlan, DeletePreview, error) {
 	plan := deletePlan{orphan: true, typeID: typeID, driverID: driverID, groupName: "(그룹 없음)", devices: []ManagedDevice{}}
-	prev := DeletePreview{GroupName: plan.groupName, Devices: []ManagedDevice{}, Blockers: []string{}, Warnings: []string{}}
+	prev := DeletePreview{GroupName: plan.groupName, Devices: []ManagedDevice{}, Blockers: []string{}, Warnings: []string{}, Points: []DeletePoint{}}
 	found, e := orphanDevices(ctx, q, typeID, driverID, deviceID, lock)
 	if e != nil {
 		return plan, prev, e

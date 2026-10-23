@@ -51,6 +51,38 @@ type DeletePreview struct {
 	Confirm  string   `json:"confirm"`
 	Blockers []string `json:"blockers"`
 	Warnings []string `json:"warnings"`
+	// Points: the checkpoints that go, to be unfolded per device (read only).
+	Points []DeletePoint `json:"points"`
+}
+
+type DeletePoint struct {
+	DeviceID     int64  `json:"deviceId"`
+	CheckpointID int64  `json:"checkpointId"`
+	Name         string `json:"name"`
+	Key          string `json:"key"`
+}
+
+const deletePointLimit = 5000
+
+// deletePoints lists the live checkpoints of the devices by device and name.
+func deletePoints(ctx context.Context, q queryer, devices []int64) ([]DeletePoint, error) {
+	out := []DeletePoint{}
+	if len(devices) == 0 {
+		return out, nil
+	}
+	rows, e := q.QueryContext(ctx, "SELECT id, device_id, COALESCE(name,''), COALESCE(request_command, driver_code, '') FROM checkpoint WHERE device_id IN ("+inList(len(devices))+") AND flag=1 ORDER BY device_id, name LIMIT "+strconv.Itoa(deletePointLimit), idArgs(devices)...)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p DeletePoint
+		if e = rows.Scan(&p.CheckpointID, &p.DeviceID, &p.Name, &p.Key); e != nil {
+			return nil, e
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 type deletePlan struct {
@@ -194,7 +226,7 @@ func buildDelete(ctx context.Context, q queryer, groupID, driverID int64, req De
 		return deletePlan{}, DeletePreview{}, fmt.Errorf("테스트 빌드(%s)는 %s 로 시작하는 그룹만 지웁니다: %s", TesterPrefix, testerGroupPrefix(), name)
 	}
 	plan := deletePlan{whole: req.WholeGroup, groupID: groupID, groupName: name, driverID: driverID, devices: []ManagedDevice{}}
-	prev := DeletePreview{WholeGroup: req.WholeGroup, GroupName: name, Devices: []ManagedDevice{}, Blockers: []string{}, Warnings: []string{}}
+	prev := DeletePreview{WholeGroup: req.WholeGroup, GroupName: name, Devices: []ManagedDevice{}, Blockers: []string{}, Warnings: []string{}, Points: []DeletePoint{}}
 	devs, others := []ManagedDevice{}, []string{}
 	if rule.Valid {
 		var e error
@@ -294,6 +326,11 @@ func deleteBlockers(ctx context.Context, q queryer, plan *deletePlan, prev *Dele
 		} else if open > 0 {
 			prev.Warnings = append(prev.Warnings, fmt.Sprintf("이 장비에 아직 닫히지 않은 알람이 %d건 있습니다. 장비를 지워도 이 알람은 자동으로 닫히지 않을 수 있으니 필요하면 알람 화면에서 정리하세요.", open))
 		}
+		points, e := deletePoints(ctx, q, deviceIDs(plan.devices))
+		if e != nil {
+			prev.Warnings = append(prev.Warnings, "지울 체크포인트 이름을 읽지 못했습니다: "+e.Error())
+		}
+		prev.Points = points
 	}
 	return nil
 }

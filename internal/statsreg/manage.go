@@ -1484,7 +1484,7 @@ func (s *Service) learnManaged(m *manageSession, points []PointChange, id string
 		return "(이름 기억 실패: " + e.Error() + ")"
 	}
 	if n := len(ev.Changes); n > 0 {
-		return fmt.Sprintf("바꾼 이름·주기 %d건을 기억해 다음 등록에도 씁니다.", n)
+		return fmt.Sprintf("바꾼 포인트 이름·주기 %d건을 기억해 다음 등록에도 씁니다(장비 이름은 기억하지 않음).", n)
 	}
 	return ""
 }

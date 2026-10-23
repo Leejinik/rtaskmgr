@@ -178,10 +178,10 @@ func TestResolveEditRefusesWhatCannotBeApplied(t *testing.T) {
 	setTester(t, "")
 	s := loadTestSession(t)
 	_, errs, _ := resolveEdit(s, ManageEdit{Rows: []RowEdit{
-		{Shape: "liz.stats.vip.location", Name: "{Host} VIP"},                                           // common device: no server name
+		{Shape: "liz.stats.vip.location", Name: "{Host} VIP"},                                            // common device: no server name
 		{Shape: "liz.stats.server.{서버별}.free.memory", Interval: 500},                                     // too short
 		{Shape: "liz.stats.cachedb.{서버별}.cpu", Name: " CPU"},                                             // surrounding space
-		{Shape: "no.such.shape", Name: "x"},                                                             // stale screen
+		{Shape: "no.such.shape", Name: "x"},                                                              // stale screen
 		{Shape: "liz.stats.cachedb.{서버별}.cpu", Overrides: []PointOverride{{CheckpointID: 1, Name: "x"}}}, // repeated / foreign
 	}, Devices: []DeviceEdit{{DeviceID: 100, Name: "dup"}, {DeviceID: 200, Name: "DUP"}, {DeviceID: 999, Name: "x"}}})
 	if len(errs) != 7 {
@@ -410,6 +410,7 @@ func expectBuildDeleteWith(m sqlmock.Sqlmock, whole bool, policies, locks, refs 
 	m.ExpectQuery("FROM checkpoint_specify_rule_condition_value v").WithArgs(int64(1), int64(3)).WillReturnRows(refs)
 	if !inTx {
 		m.ExpectQuery("FROM alarm WHERE device_id IN").WithArgs(ids...).WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+		m.ExpectQuery("SELECT id, device_id, COALESCE\\(name,''\\)").WithArgs(ids...).WillReturnRows(sqlmock.NewRows([]string{"id", "d", "n", "k"}).AddRow(int64(1), int64(100), "CPU", "liz.stats.a").AddRow(int64(3), int64(100), "MEM", "liz.stats.b"))
 	}
 }
 
@@ -428,7 +429,7 @@ func TestBuildDeleteScopeAndBlockers(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(plan.devices) != 1 || plan.devices[0].DeviceID != 100 || prev.Confirm != "server_1" || prev.Checkpoints != 2 || len(prev.Blockers) != 0 || plan.longest != 60000 {
+	if len(plan.devices) != 1 || plan.devices[0].DeviceID != 100 || prev.Confirm != "server_1" || prev.Checkpoints != 2 || len(prev.Blockers) != 0 || plan.longest != 60000 || len(prev.Points) != 2 || prev.Points[1].Name != "MEM" {
 		t.Fatalf("device scope: %+v %+v", plan, prev)
 	}
 	expectBuildDelete(m, true, sqlmock.NewRows([]string{"id", "n", "c"}).AddRow(int64(9), "CPU 높음", int64(3)))

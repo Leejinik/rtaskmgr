@@ -68,6 +68,7 @@ func expectOrphanDelete(m sqlmock.Sqlmock, inTx bool) {
 	m.ExpectQuery("FROM checkpoint_specify_rule_condition_value v").WithArgs(int64(11), int64(12)).WillReturnRows(sqlmock.NewRows([]string{"r", "n", "c"}))
 	if !inTx {
 		m.ExpectQuery("FROM alarm WHERE device_id IN").WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+		m.ExpectQuery("SELECT id, device_id, COALESCE").WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"id", "d", "n", "k"}))
 	}
 }
 

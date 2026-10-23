@@ -36,6 +36,10 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
   const [delPreview, setDelPreview] = useState<statsreg.DeletePreview | null>(null);
   const [confirm, setConfirm] = useState("");
   const [delResult, setDelResult] = useState<statsreg.DeleteResult | null>(null);
+  // Devices a delete just removed: if a re-read still shows one it is marked 「삭제됨, 반영 대기」.
+  const [gone, setGone] = useState<number[]>([]);
+  // One line under the results: a cancelled delete, a failed re-read after a delete.
+  const [note, setNote] = useState("");
   // Resource-stats devices in no group (admin's group delete leaves them behind).
   const [orphans, setOrphans] = useState<statsreg.OrphanDevice[] | null>(null);
   const loadOrphans = (planID: string) => StatsManageOrphans(planID).then(v => setOrphans(v || [])).catch(() => setOrphans(null));
@@ -49,7 +53,8 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
   const redisRetry = (id: string) => work("Redis 수집값 키 다시 지우는 중…", async () => { setResult(null); setDelResult(await StatsManageRedisRetry(plan.id, id)); });
   const dialog = !!preview || !!delPreview;
   useEffect(() => { onDialog(dialog); }, [dialog]);
-  useEsc(() => { setPreview(null); setDelPreview(null); }, dialog && !busy);
+  function cancelDelete() { setDelPreview(null); setConfirm(""); setNote("취소됨 — 아무것도 지우지 않았습니다."); }
+  useEsc(() => { setPreview(null); if (delPreview) cancelDelete(); }, dialog && !busy);
 
   const devices = group?.devices || [];
   const listed = useMemo(() => (group?.rows || []).filter(r => (!rawOnly || r.rawName) && (!search || (r.shape + " " + r.points.map(p => p.name + " " + p.key).join(" ")).toLowerCase().includes(search.toLowerCase()))), [group, rawOnly, search]);
@@ -85,6 +90,7 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
       {result.conflicts?.length > 0 && <details open><summary>불러온 뒤 다른 곳(admin 등)에서 바뀌어 건너뛴 {result.conflicts.length}개 — 덮어쓰지 않았습니다</summary><ul>{result.conflicts.map((c, i) => <li key={i}>{c}</li>)}</ul></details>}
       {result.pending && <button className="toolbtn" disabled={!!busy} onClick={() => resend(result.id)}>알림 다시 보내기 (DB는 다시 바꾸지 않음)</button>}
     </div>}
+    {note && <p className="stats-muted stats-result" role="status">{note}</p>}
     {delResult && <div className={delResult.verified ? "stats-success stats-result" : "stats-warning stats-result"} role="status">
       <p><b>삭제 결과</b> — {delResult.message}</p>
       {delResult.pending && <button className="toolbtn" disabled={!!busy} onClick={() => resend(delResult.id)}>알림 다시 보내기 (DB는 다시 바꾸지 않음)</button>}
@@ -101,7 +107,7 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
     </details>}
     {orphans && orphans.length > 0 && <details className="stats-recovery stats-orphans" open><summary>그룹에 없는 장비 {orphans.length}대 — admin 에서 그룹을 지우면 장비는 그룹 밖에 남아 계속 수집됩니다</summary>
       <p className="stats-muted">이 앱이 등록한 장비(체크포인트가 모두 리소스 수집 키)만 여기서 지울 수 있습니다. 나머지는 🔒 이유와 admin 에서 찾는 곳을 적어 두었습니다.</p>
-      <ul>{orphans.map(o => <li key={o.deviceId}>{o.name} (장비 ID {o.deviceId}) · 체크포인트 {o.checkpoints}개 {o.locked ? <small className="stats-warning">🔒 {o.locked}</small> : <button className="linkbtn" disabled={!!busy} onClick={() => work("지울 내용 확인 중…", async () => { setResult(null); setDelResult(null); setConfirm(""); setDelPreview(await StatsManageOrphanDeletePreview(plan.id, o.deviceId)); })}>지울 내용 미리보기</button>}</li>)}</ul>
+      <ul>{orphans.map(o => <li key={o.deviceId}>{o.name} (장비 ID {o.deviceId}) · 체크포인트 {o.checkpoints}개 {gone.includes(o.deviceId) ? <small className="stats-badge">삭제됨, 반영 대기</small> : o.locked ? <small className="stats-warning">🔒 {o.locked}</small> : <button className="linkbtn" disabled={!!busy} onClick={() => work("지울 내용 확인 중…", async () => { setResult(null); setDelResult(null); setNote(""); setConfirm(""); setDelPreview(await StatsManageOrphanDeletePreview(plan.id, o.deviceId)); })}>지울 내용 미리보기</button>}</li>)}</ul>
     </details>}
     {!(plan.existing || []).length && <p className="stats-muted">관리할 그룹이 없습니다{orphans?.length ? " — 위의 「그룹에 없는 장비」만 정리할 수 있습니다" : ""}.</p>}
     {(plan.existing || []).length > 0 && <div className="stats-toolbar">
@@ -124,10 +130,10 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
       <details className="stats-help"><summary>새 이름 칸 쓰는 법</summary>
         <p>한 줄은 <b>서버만 다르고 나머지가 같은 키</b>를 묶은 것입니다(예: <code>liz.stats.server.{"{서버별}"}.free.memory</code> — {"{서버별}"} 자리에 서버마다 다른 값이 들어 있음). 줄의 「새 이름」은 그 줄에 있는 <b>모든 서버</b>의 체크포인트에 들어갑니다. 서버마다 다르게 하려면 ▸ 를 눌러 펼친 뒤 서버별 칸에 쓰세요(서버별 칸이 우선).</p>
         <p>이름에 넣으면 서버마다 알아서 바뀌는 자리: <code>{"{서버}"}</code> 서버 이름 그대로(server_1) · <code>{"{서버대문자}"}</code> 첫 글자만 대문자(Server_1) · <code>{"{서버번호}"}</code> 서버 이름 끝 번호(server_3 → 3) · <code>{"{키1}"}</code> <code>{"{키2}"}</code>… 키의 첫 번째·두 번째 {"{ }"} 안 값(예: 모듈 번호, 네트워크 카드 이름). 「지금 이름에서 시작」은 서버마다 다른 부분을 이 자리로 바꿔 넣습니다. 빈 칸은 바꾸지 않습니다. 주기는 ms(1000 = 1초)이고, admin 처럼 수집 주기·보관 주기를 같이 바꿉니다.</p>
-        <p>바꾼 이름·주기는 이 PC가 기억해 두었다가, 다음에 새로 등록하거나 새 키를 추가할 때 같은 모양의 키에 미리 채웁니다.</p>
+        <p>바꾼 포인트 이름·주기는 이 PC가 기억해 두었다가, 다음에 새로 등록하거나 새 키를 추가할 때 같은 종류의 키에 미리 채웁니다. 장비 이름은 기억하지 않습니다.</p>
       </details>
       <div className="stats-table-wrap"><table className="stats-table stats-manage-table">
-        <thead><tr><th></th><th>키 모양 / 지금 이름</th>{devices.map(d => <th key={d.deviceId} title={`장비 ID ${d.deviceId}`}>{d.name}</th>)}<th>주기 ms</th><th>새 이름 (모든 서버)</th></tr></thead>
+        <thead><tr><th></th><th>키 모양 / 지금 이름</th>{devices.map(d => <th key={d.deviceId} title={`장비 ID ${d.deviceId}`}>{d.name}{gone.includes(d.deviceId) && <small className="stats-badge">삭제됨, 반영 대기</small>}</th>)}<th className="stats-interval-col">주기 ms</th><th>새 이름</th></tr></thead>
         <tbody>{listed.map(r => {
           const cur = rowCurrentName(r);
           const ivs = rowIntervals(r);
@@ -137,8 +143,8 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
             <td><button className="linkbtn" aria-label={`${r.shape} 서버별로 펼치기`} aria-expanded={!!open[r.shape]} onClick={() => setOpen(o => ({ ...o, [r.shape]: !o[r.shape] }))}>{open[r.shape] ? "▾" : "▸"}</button></td>
             <td><code>{r.shape}</code>{cur ? <span>{cur}</span> : <span className="stats-muted">서버마다 이름이 다름 — 펼쳐서 보기</span>}{r.rawName && <small className="stats-badge">이름이 키 그대로</small>}{partial && <small className="stats-badge">{r.devices}/{r.shape.includes("{서버별}") ? hasServers : 1} 서버에만 있음</small>}</td>
             {devices.map(d => { const ps = r.points.filter(p => p.deviceId === d.deviceId); return <td key={d.deviceId} className="stats-cell">{ps.length === 0 ? <span className="stats-muted">—</span> : <>✓{ps.length > 1 ? ` ${ps.length}개` : ""}<small title={ps.map(p => `${p.key} → ${p.name}`).join("\n")}>{ps.map(p => overrides[p.checkpointId] || p.name).join(", ")}</small></>}</td>; })}
-            <td><input aria-label={`${r.shape} 새 주기 ms`} type="number" min={1000} step={1000} placeholder={ivs.length === 1 ? String(ivs[0]) : "서로 다름"} value={v.interval} disabled={!!busy} onChange={e => setRow(r.shape, { interval: e.target.value })} /></td>
-            <td><input aria-label={`${r.shape} 새 이름`} placeholder={cur || "새 이름"} value={v.name} disabled={!!busy} onChange={e => setRow(r.shape, { name: e.target.value })} />{!v.name && r.template && <button className="linkbtn" disabled={!!busy} title="지금 이름을 틀로 바꿔 넣습니다. 서버마다 다른 부분은 {서버}·{서버번호}·{키1} 자리가 되어 서버별로 채워집니다" onClick={() => setRow(r.shape, { name: r.template })}>지금 이름에서 시작 ({r.template})</button>}{r.templateWarning && <small className="stats-warning">⚠ {r.templateWarning}</small>}</td>
+            <td className="stats-interval-col"><input aria-label={`${r.shape} 새 주기 ms`} type="number" min={1000} step={1000} placeholder={ivs.length === 1 ? String(ivs[0]) : "서로 다름"} value={v.interval} disabled={!!busy} onChange={e => setRow(r.shape, { interval: e.target.value })} /></td>
+            <td><input aria-label={`${r.shape} 새 이름`} placeholder={cur || "새 이름"} value={v.name} disabled={!!busy} onChange={e => setRow(r.shape, { name: e.target.value })} /><small className="stats-muted">{r.devices > 1 ? `→ 이 줄의 서버 ${r.devices}대 모두` : "→ 이 서버 1대에만 있음"}</small>{!v.name && r.template && <button className="linkbtn" disabled={!!busy} title="지금 이름을 틀로 바꿔 넣습니다. 서버마다 다른 부분은 {서버}·{서버번호}·{키1} 자리가 되어 서버별로 채워집니다" onClick={() => setRow(r.shape, { name: r.template })}>지금 이름에서 시작 ({r.template})</button>}{r.templateWarning && <small className="stats-warning">⚠ {r.templateWarning}</small>}</td>
           </tr>,
           open[r.shape] && <tr key={r.shape + " open"} className="stats-open-row"><td></td><td colSpan={devices.length + 3}>{r.points.map(p => <label key={p.checkpointId} className="stats-override"><span>{devices.find(d => d.deviceId === p.deviceId)?.name} · <code>{p.key}</code> · 체크포인트 {p.checkpointId} · 지금 이름 「{p.name}」 · {p.interval} ms</span><input aria-label={`체크포인트 ${p.checkpointId} 새 이름`} placeholder="이 서버만 다른 이름 (비우면 줄의 새 이름)" value={overrides[p.checkpointId] || ""} disabled={!!busy} onChange={e => setOverrides(o => ({ ...o, [p.checkpointId]: e.target.value }))} /></label>)}</td></tr>];
         })}</tbody>
@@ -147,8 +153,8 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
 
       <details className="stats-danger"><summary>장비 또는 그룹 삭제</summary>
         <p className="stats-muted">장비를 지우면 그 장비의 체크포인트도 모두 지워집니다(admin 의 장비 삭제와 같음). 체크포인트 하나씩 지우기는 없습니다 — 이 빌드의 Collector는 혼자 지운 체크포인트를 재기동 전까지 초당 10번씩 경고로 남기기 때문입니다. 그룹 삭제는 그 안의 장비를 먼저 모두 지운 뒤 그룹을 지웁니다(admin 은 장비를 남깁니다). 지운 체크포인트의 Redis 수집값 키(checkpoint:번호)도 이 앱이 지웁니다.</p>
-        <div className="stats-toolbar"><label className="stats-inline">지울 대상<select value={target} disabled={!!busy} onChange={e => setTarget(e.target.value)}><option value="">고르세요</option>{devices.map(d => <option key={d.deviceId} value={String(d.deviceId)} disabled={!!d.locked}>장비 {d.name} (체크포인트 {d.checkpoints}개){d.locked ? " — 🔒 다른 그룹에도 있거나 바꿀 수 없는 장비" : ""}</option>)}<option value="group">그룹 「{group.name}」 전체 (장비 {devices.length}대)</option></select></label>
-          <button className="toolbtn" disabled={!!busy || !target} onClick={() => work("지울 내용 확인 중…", async () => { setResult(null); setDelResult(null); setConfirm(""); setDelPreview(await StatsManageDeletePreview(new statsreg.DeleteRequest({ manageId: group.id, deviceId: target === "group" ? 0 : Number(target), wholeGroup: target === "group" }))); })}>지울 내용 미리보기</button></div>
+        <div className="stats-toolbar"><label className="stats-inline">지울 대상<select value={target} disabled={!!busy} onChange={e => setTarget(e.target.value)}><option value="">고르세요</option>{devices.map(d => <option key={d.deviceId} value={String(d.deviceId)} disabled={!!d.locked || gone.includes(d.deviceId)}>장비 {d.name} (체크포인트 {d.checkpoints}개){d.locked ? " — 🔒 다른 그룹에도 있거나 바꿀 수 없는 장비" : ""}</option>)}<option value="group">그룹 「{group.name}」 전체 (장비 {devices.length}대)</option></select></label>
+          <button className="toolbtn" disabled={!!busy || !target} onClick={() => work("지울 내용 확인 중…", async () => { setResult(null); setDelResult(null); setNote(""); setConfirm(""); setDelPreview(await StatsManageDeletePreview(new statsreg.DeleteRequest({ manageId: group.id, deviceId: target === "group" ? 0 : Number(target), wholeGroup: target === "group" }))); })}>지울 내용 미리보기</button></div>
       </details>
     </>}
 
@@ -168,12 +174,12 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
     {delPreview && <div className="scrim stats-inner-scrim"><div className="stats-inner-dialog stats-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="stats-delete-title">
       <h3 id="stats-delete-title">{delPreview.wholeGroup ? `그룹 「${delPreview.groupName}」 삭제` : `장비 「${delPreview.confirm}」 삭제`}</h3>
       <p>지워지는 것: <b>장비 {delPreview.devices.length}대 · 체크포인트 {delPreview.checkpoints}개</b>{delPreview.wholeGroup ? " · 그룹 1개" : ""} · Redis 수집값 키 최대 {delPreview.checkpoints}개</p>
-      <ul>{delPreview.devices.map(d => <li key={d.deviceId}>{d.name} (ID {d.deviceId}) — 체크포인트 {d.checkpoints}개</li>)}</ul>
+      <ul>{delPreview.devices.map(d => { const ps = (delPreview.points || []).filter(p => p.deviceId === d.deviceId); return <li key={d.deviceId}>{d.name} (ID {d.deviceId}) — 체크포인트 {d.checkpoints}개{ps.length > 0 && <details className="stats-delete-names"><summary>지워질 체크포인트 이름 보기</summary><ol>{ps.map(p => <li key={p.checkpointId}>{p.name} <small className="stats-muted">{p.key}</small></li>)}</ol></details>}</li>; })}</ul>
       <p className="stats-error"><b>되돌릴 수 없습니다.</b> admin 에도 지운 장비를 되살리는 화면이 없습니다.</p>
       {delPreview.blockers?.map((b, i) => <p className="stats-error" key={"b" + i}>⛔ {b}</p>)}
       {delPreview.warnings?.map((w, i) => <p className="stats-warning" key={"w" + i}>⚠ {w}</p>)}
       {delPreview.id && <label>확인을 위해 <b>{delPreview.confirm}</b> 을(를) 그대로 입력하세요<input aria-label="삭제 확인 이름" value={confirm} autoComplete="off" onChange={e => setConfirm(e.target.value)} /></label>}
-      <div className="stats-update-buttons"><button className="toolbtn danger" disabled={!!busy || !delPreview.id || confirm !== delPreview.confirm} onClick={() => work("삭제 중…", async () => { const p = delPreview; setDelPreview(null); const r = await StatsManageDelete(p.id, confirm); setDelResult(r); setConfirm(""); const next = await reinspect(); loadOrphans(next.id); const still = next.existing?.find(g => g.groupId === groupId); if (still) setGroup(await StatsManageLoad(next.id, groupId)); else { setGroup(null); setGroupId(next.existing?.[0]?.groupId || 0); } })}>{delPreview.wholeGroup ? "그룹 삭제" : "장비 삭제"}</button><button className="toolbtn" disabled={!!busy} onClick={() => setDelPreview(null)}>취소</button></div>
+      <div className="stats-update-buttons"><button className="toolbtn danger" disabled={!!busy || !delPreview.id || confirm !== delPreview.confirm} onClick={() => work("삭제 중…", async () => { const p = delPreview; setDelPreview(null); setNote(""); const r = await StatsManageDelete(p.id, confirm); setDelResult(r); setConfirm(""); if (r.committed) setGone(r.deviceIds || []); try { const next = await reinspect(); loadOrphans(next.id); const still = next.existing?.find(g => g.groupId === groupId); if (still) setGroup(await StatsManageLoad(next.id, groupId)); else { setGroup(null); setGroupId(next.existing?.[0]?.groupId || 0); } } catch (e) { setNote(`삭제는 끝났지만 목록 갱신 실패 — 아래 목록은 지우기 전 상태일 수 있습니다. 「다시 불러오기」를 누르세요. (${e})`); } })}>{delPreview.wholeGroup ? "그룹 삭제" : "장비 삭제"}</button><button className="toolbtn" disabled={!!busy} onClick={cancelDelete}>취소</button></div>
     </div></div>}
   </div>;
 }

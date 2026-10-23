@@ -398,9 +398,9 @@ func (s *Service) register(ctx context.Context, sel Selection, rollbackOnly bool
 			}
 		}
 		if ev, e := s.learnPatterns(learn, "registration "+out.ID); e != nil {
-			out.Message += " (이름·주기 기억 실패: " + e.Error() + ")"
+			out.Message += " (포인트 이름·주기 기억 실패: " + e.Error() + ")"
 		} else if n := len(ev.Changes); n > 0 {
-			out.Message += fmt.Sprintf(" 이번에 쓴 이름·주기 %d건을 기억해 다음 조회 때 같은 모양의 키에 미리 채웁니다.", n)
+			out.Message += fmt.Sprintf(" 이번에 쓴 포인트 이름·주기 %d건을 기억해 다음 조회 때 같은 종류의 키에 미리 채웁니다(장비 이름은 기억하지 않음).", n)
 		}
 	}
 	return out, nil

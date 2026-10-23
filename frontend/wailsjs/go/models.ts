@@ -1842,6 +1842,24 @@ export namespace statsreg {
 	        this.kafkaHosts = source["kafkaHosts"];
 	    }
 	}
+	export class DeletePoint {
+	    deviceId: number;
+	    checkpointId: number;
+	    name: string;
+	    key: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeletePoint(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.deviceId = source["deviceId"];
+	        this.checkpointId = source["checkpointId"];
+	        this.name = source["name"];
+	        this.key = source["key"];
+	    }
+	}
 	export class ManagedDevice {
 	    deviceId: number;
 	    name: string;
@@ -1873,6 +1891,7 @@ export namespace statsreg {
 	    confirm: string;
 	    blockers: string[];
 	    warnings: string[];
+	    points: DeletePoint[];
 	
 	    static createFrom(source: any = {}) {
 	        return new DeletePreview(source);
@@ -1888,6 +1907,7 @@ export namespace statsreg {
 	        this.confirm = source["confirm"];
 	        this.blockers = source["blockers"];
 	        this.warnings = source["warnings"];
+	        this.points = this.convertValues(source["points"], DeletePoint);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
