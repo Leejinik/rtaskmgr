@@ -101,3 +101,6 @@
 .stats-unfinished p { margin: 2px 0 6px; }
 .stats-unfinished ul { margin: 0 0 0 18px; }
 .stats-unfinished .linkbtn { margin-left: 6px; }
+.stats-settings > .stats-wide { grid-column: 1 / -1; margin: 0; }
+.stats-outside { font-size: 12px; }
+.stats-outside > .stats-settings { margin-top: 8px; }
