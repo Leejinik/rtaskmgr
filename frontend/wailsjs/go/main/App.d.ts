@@ -156,17 +156,45 @@ export function StartRecording(arg1:string):Promise<string>;
 
 export function StartScheduled(arg1:string,arg2:number,arg3:number,arg4:string):Promise<monitor.RecMeta>;
 
+export function StatsClusterConnections():Promise<Record<string, statsreg.SavedConnection>>;
+
 export function StatsConnections():Promise<Array<statsreg.SavedConnection>>;
+
+export function StatsDeleteClusterConnection(arg1:string):Promise<void>;
+
+export function StatsDiscoverFromCluster(arg1:string):Promise<statsreg.DiscoverResult>;
+
+export function StatsDiscoverFromHosts(arg1:Array<host.Host>):Promise<statsreg.DiscoverResult>;
 
 export function StatsImportPatterns(arg1:string):Promise<statsreg.PatternEvent>;
 
 export function StatsInspect(arg1:statsreg.Config):Promise<statsreg.Plan>;
+
+export function StatsManageApply(arg1:string):Promise<statsreg.ManageResult>;
+
+export function StatsManageDelete(arg1:string,arg2:string):Promise<statsreg.DeleteResult>;
+
+export function StatsManageDeletePreview(arg1:statsreg.DeleteRequest):Promise<statsreg.DeletePreview>;
+
+export function StatsManageLoad(arg1:string,arg2:number):Promise<statsreg.ManagedGroup>;
+
+export function StatsManagePending():Promise<Array<statsreg.PendingManage>>;
+
+export function StatsManagePreview(arg1:statsreg.ManageEdit):Promise<statsreg.ManagePreview>;
+
+export function StatsManageRedisRetry(arg1:string,arg2:string):Promise<statsreg.DeleteResult>;
+
+export function StatsManageResend(arg1:string,arg2:string):Promise<statsreg.ManageOutcome>;
 
 export function StatsRegister(arg1:statsreg.Selection):Promise<statsreg.Result>;
 
 export function StatsRetry(arg1:statsreg.Config,arg2:string):Promise<statsreg.Result>;
 
 export function StatsSaveConnection(arg1:statsreg.SavedConnection):Promise<void>;
+
+export function StatsSetClusterConnection(arg1:string,arg2:statsreg.SavedConnection):Promise<void>;
+
+export function StatsTesterPrefix():Promise<string>;
 
 export function StatsValidate(arg1:statsreg.Selection):Promise<void>;
 

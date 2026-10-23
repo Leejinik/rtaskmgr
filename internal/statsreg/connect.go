@@ -42,6 +42,10 @@ type Service struct {
 	PatternFile string
 	// Saved connections file; empty means ~/.rtaskmgr/stats-connections.json.
 	ConnectionFile string
+	// Per-cluster connections file; empty means ~/.rtaskmgr/stats-clusters.json.
+	ClusterConnectionFile string
+	// 「기존 등록 관리」 sessions and unsent notices, see manage.go.
+	manage manageState
 }
 
 func openDB(ctx context.Context, c Config) (*sql.DB, error) {
@@ -321,6 +325,7 @@ func (s *Service) Inspect(ctx context.Context, c Config) (Plan, error) {
 	}
 	p.Points = makePoints(values, p.Servers, mods, cat.Templates)
 	p.Servers = append(p.Servers, Server{Hostname: "common", Name: "common"})
+	testerPlanDefaults(&p)
 	s.applyPatterns(&p)
 	regs, e := loadExisting(ctx, db, cat.DriverID)
 	if e != nil {

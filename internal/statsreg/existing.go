@@ -69,12 +69,18 @@ WHERE i.device_driver_id=? AND c.flag=1 AND d.flag=1 AND i.flag=1 AND c.request_
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if e = rows.Err(); e != nil {
+		return nil, e
+	}
+	return testerScope(out), nil
 }
 
 // deletedKeys returns keys of this driver whose checkpoints were deleted and
 // that have no live checkpoint any more.
 func deletedKeys(ctx context.Context, q queryer, driverID int64) (map[string]bool, error) {
+	if TesterPrefix != "" {
+		return testerDeletedKeys(ctx, q, driverID)
+	}
 	rows, e := q.QueryContext(ctx, `SELECT DISTINCT c.request_command FROM checkpoint c
 JOIN device_interface i ON i.id=c.device_interface_id
 WHERE i.device_driver_id=? AND c.flag<>1 AND c.request_command IS NOT NULL`, driverID)

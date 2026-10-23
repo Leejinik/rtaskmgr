@@ -1,7 +1,9 @@
-import { useState } from "react";
-import { host } from "../../wailsjs/go/models";
-import { SaveHosts } from "../../wailsjs/go/main/App";
+import { useEffect, useState } from "react";
+import { host, statsreg } from "../../wailsjs/go/models";
+import { SaveHosts, StatsClusterConnections, StatsSetClusterConnection, StatsDeleteClusterConnection } from "../../wailsjs/go/main/App";
 import { candidatesOf } from "./ConnectDialog";
+import StatsConnectionFields, { KafkaRow, defaultStatsConfig, statsConnection } from "./StatsConnectionFields";
+import StatsDiscoverReview, { DiscoverResult, discoverFromHosts } from "./StatsDiscoverReview";
 
 interface Props {
   // When set, the dialog edits an existing cluster (pre-filled) and upserts its
@@ -93,6 +95,86 @@ export default function ClusterDialog({ editing, hosts = [], onSaved, onClose }:
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
+  // "MK119 리소스 수집 등록": the cluster keeps its own MariaDB/Redis/Kafka
+  // connection, filled in when the registration dialog is opened for it.
+  const [statsOn, setStatsOn] = useState(false);
+  const [statsConfig, setStatsConfig] = useState<statsreg.Config>(defaultStatsConfig(""));
+  const [statsRows, setStatsRows] = useState<KafkaRow[]>([]);
+  useEffect(() => {
+    if (!editing) return;
+    StatsClusterConnections().then((all) => {
+      const own = all?.[editing.id];
+      if (!own) return;
+      setStatsConfig(own.config);
+      setStatsRows((own.kafkaRows ?? []).map((r) => ({ hostname: r.hostname, ip: r.ip, port: r.port })));
+      setStatsOn(true);
+    }).catch(() => {});
+  }, []);
+  function toggleStats(on: boolean) {
+    setStatsOn(on);
+    if (!on) return;
+    // First tick: start from this cluster's servers. Kafka host names are what the
+    // brokers advertise, which the dialog cannot know, so they stay for the user.
+    const addrs = rows.map((r) => r.addr.trim()).filter((a) => a !== "");
+    if (!statsConfig.dbHost && !statsConfig.redisHost && addrs.length) {
+      setStatsConfig({ ...statsConfig, dbHost: addrs[0], redisHost: addrs[0] });
+    }
+    if (statsRows.length === 0) {
+      setStatsRows(addrs.length ? addrs.map((ip) => ({ hostname: "", ip, port: 9092 })) : [{ hostname: "", ip: "", port: 9092 }]);
+    }
+  }
+
+  // 「서버에서 불러오기」 reads the servers exactly as typed above — no save needed,
+  // so a new cluster works too and an unsaved edit (password, added server, jump
+  // route) is what gets used. New rows get temporary ids so "member" jump routes
+  // can point at them; nothing is stored.
+  const [discovering, setDiscovering] = useState(false);
+  const [discovery, setDiscovery] = useState<DiscoverResult | null>(null);
+  const [discoverErr, setDiscoverErr] = useState("");
+  function discoveryHosts(): host.Host[] | string {
+    const filled = rows.filter((r) => r.addr.trim() !== "");
+    if (filled.length === 0) return "서버 IP를 먼저 입력하세요.";
+    const ids = filled.map((r, i) => r.id ?? `unsaved-${i}`);
+    for (let i = 0; i < filled.length; i++) {
+      const r = filled[i];
+      const user = perServer ? r.user.trim() : commonUser.trim();
+      const pw = perServer ? r.password : commonPassword;
+      const key = perServer ? r.keyPath : commonKeyPath;
+      if (!user) return perServer ? `${i + 1}번째 서버의 SSH 계정을 먼저 입력하세요.` : "공통 SSH 계정을 먼저 입력하세요.";
+      if (!pw && !key) return perServer ? `${i + 1}번째 서버의 비밀번호 또는 키 경로를 먼저 입력하세요.` : "공통 비밀번호 또는 개인키 경로를 먼저 입력하세요.";
+    }
+    const entryIdx = jumpRows.filter((i) => i >= 0 && i < filled.length);
+    if (jumpMode === "member" && entryIdx.length === 0) return "진입 서버를 1개 이상 선택하세요.";
+    if (jumpMode === "external" && jumpExternals.length === 0) return "외부 경유 서버를 1개 이상 선택하세요.";
+    return filled.map((r, i) => host.Host.createFrom({
+      id: ids[i],
+      name: r.name.trim() || `${clusterName.trim() || "클러스터"}-${i + 1}`,
+      addr: r.addr.trim(),
+      port: Number(r.port) || 22,
+      user: perServer ? r.user.trim() : commonUser.trim(),
+      password: perServer ? r.password : commonPassword,
+      keyPath: perServer ? r.keyPath : commonKeyPath,
+      jumpHostIds: jumpMode === "external" ? jumpExternals
+        : jumpMode === "member" && !entryIdx.includes(i) ? entryIdx.map((j) => ids[j]) : [],
+      jumpHostId: "",
+    }));
+  }
+  async function discover() {
+    const list = discoveryHosts();
+    if (typeof list === "string") { setDiscoverErr(list); return; }
+    setDiscovering(true);
+    setDiscoverErr("");
+    setDiscovery(null);
+    try {
+      setDiscovery(await discoverFromHosts(list));
+    } catch (e: any) {
+      setDiscoverErr(`서버에서 불러오지 못했습니다: ${e?.message ?? e}`);
+    } finally {
+      setDiscovering(false);
+    }
+  }
+  const firstAddr = rows.map((r) => r.addr.trim()).find((a) => a !== "") ?? "";
+
   function setRow(i: number, patch: Partial<Row>) {
     setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
   }
@@ -143,10 +225,31 @@ export default function ClusterDialog({ editing, hosts = [], onSaved, onClose }:
       return;
     }
 
+    let statsConfigChecked: statsreg.Config | null = null;
+    if (statsOn) {
+      if (!statsConfig.dbHost.trim() || !statsConfig.redisHost.trim()) {
+        setErr("MK119 리소스 수집 등록: MariaDB와 Redis 서버 주소를 입력하세요.");
+        return;
+      }
+      try {
+        statsConfigChecked = statsConnection(statsConfig, statsRows);
+      } catch (e: any) {
+        setErr(`MK119 리소스 수집 등록: ${e?.message ?? e}`);
+        return;
+      }
+    }
+
     setBusy(true);
     setErr("");
     try {
       const clusterId = editing?.id ?? crypto.randomUUID();
+      // Before the hosts: a failure here leaves nothing half saved, whereas a
+      // retry after saving new rows would register them a second time.
+      if (statsConfigChecked) {
+        await StatsSetClusterConnection(clusterId, new statsreg.SavedConnection({ config: statsConfigChecked, kafkaRows: statsRows, savedAt: "" }));
+      } else if (editing) {
+        await StatsDeleteClusterConnection(clusterId);
+      }
       const list = filled.map((r, i) =>
         host.Host.createFrom({
           id: r.id ?? "", // preserve id → upsert existing member; empty → new host
@@ -186,7 +289,8 @@ export default function ClusterDialog({ editing, hosts = [], onSaved, onClose }:
 
   return (
     <div className="scrim" onMouseDown={onClose}>
-      <div className="modal" onMouseDown={(e) => e.stopPropagation()} style={{ minWidth: 560 }}>
+      <div className="modal" onMouseDown={(e) => e.stopPropagation()}
+        style={{ minWidth: 560, width: statsOn ? 760 : undefined, maxHeight: "92vh", overflowY: "auto" }}>
         <h2>{editing ? "클러스터 편집" : "클러스터 추가"}</h2>
 
         <label>클러스터 이름</label>
@@ -295,6 +399,34 @@ export default function ClusterDialog({ editing, hosts = [], onSaved, onClose }:
             </b> 순서로 경유를 시도합니다. 앞의 경로가 막혀 있으면 다음 후보로 자동
             재시도하고, 모두 실패하면 직접 접속으로 넘어가지 않고 실패로 보고합니다.
           </div>
+        )}
+
+        <label className="check" style={{ marginTop: 14 }}>
+          <input type="checkbox" checked={statsOn} onChange={(e) => toggleStats(e.target.checked)} />
+          MK119 리소스 수집 등록
+        </label>
+        {statsOn && (
+          <>
+            <div style={{ color: "var(--text-mute)", fontSize: 11, margin: "4px 0 8px" }}>
+              이 클러스터에서 「MK119 리소스 수집 등록」을 열면 아래 접속 정보가 채워집니다.
+              체크를 해제하고 저장하면 저장된 접속 정보를 지웁니다.
+              「서버에서 불러오기」는 저장 전이어도 위의 서버 목록·계정·접속 방식으로 바로 읽습니다.
+            </div>
+            {discoverErr && <div className="err" style={{ marginBottom: 8 }}>{discoverErr}</div>}
+            {discovery && (
+              <StatsDiscoverReview result={discovery} config={statsConfig} baseline={defaultStatsConfig(firstAddr)}
+                kafkaRows={statsRows}
+                onApply={(c, kafkaRows) => {
+                  setStatsConfig(c);
+                  if (kafkaRows) setStatsRows(() => kafkaRows);
+                  setDiscovery(null);
+                }}
+                onClose={() => setDiscovery(null)} />
+            )}
+            <StatsConnectionFields config={statsConfig} setConfig={setStatsConfig}
+              kafkaRows={statsRows} setKafkaRows={setStatsRows} disabled={busy}
+              onDiscover={discover} discovering={discovering} />
+          </>
         )}
 
         <div style={{ color: "var(--text-mute)", fontSize: 11, marginTop: 10 }}>

@@ -1842,6 +1842,298 @@ export namespace statsreg {
 	        this.kafkaHosts = source["kafkaHosts"];
 	    }
 	}
+	export class ManagedDevice {
+	    deviceId: number;
+	    name: string;
+	    host: string;
+	    checkpoints: number;
+	    otherInterfaces: number;
+	    locked: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ManagedDevice(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.deviceId = source["deviceId"];
+	        this.name = source["name"];
+	        this.host = source["host"];
+	        this.checkpoints = source["checkpoints"];
+	        this.otherInterfaces = source["otherInterfaces"];
+	        this.locked = source["locked"];
+	    }
+	}
+	export class DeletePreview {
+	    id: string;
+	    wholeGroup: boolean;
+	    groupName: string;
+	    devices: ManagedDevice[];
+	    checkpoints: number;
+	    confirm: string;
+	    blockers: string[];
+	    warnings: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DeletePreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.wholeGroup = source["wholeGroup"];
+	        this.groupName = source["groupName"];
+	        this.devices = this.convertValues(source["devices"], ManagedDevice);
+	        this.checkpoints = source["checkpoints"];
+	        this.confirm = source["confirm"];
+	        this.blockers = source["blockers"];
+	        this.warnings = source["warnings"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DeleteRequest {
+	    manageId: string;
+	    deviceId: number;
+	    wholeGroup: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeleteRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.manageId = source["manageId"];
+	        this.deviceId = source["deviceId"];
+	        this.wholeGroup = source["wholeGroup"];
+	    }
+	}
+	export class DeleteResult {
+	    id: string;
+	    committed: boolean;
+	    notified: boolean;
+	    pending: boolean;
+	    deviceIds: number[];
+	    checkpoints: number;
+	    groupDeleted: boolean;
+	    keysDeleted: number;
+	    keysLeft: string[];
+	    dbLeft: number;
+	    verified: boolean;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeleteResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.committed = source["committed"];
+	        this.notified = source["notified"];
+	        this.pending = source["pending"];
+	        this.deviceIds = source["deviceIds"];
+	        this.checkpoints = source["checkpoints"];
+	        this.groupDeleted = source["groupDeleted"];
+	        this.keysDeleted = source["keysDeleted"];
+	        this.keysLeft = source["keysLeft"];
+	        this.dbLeft = source["dbLeft"];
+	        this.verified = source["verified"];
+	        this.message = source["message"];
+	    }
+	}
+	export class DeviceChange {
+	    deviceId: number;
+	    oldName: string;
+	    newName: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeviceChange(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.deviceId = source["deviceId"];
+	        this.oldName = source["oldName"];
+	        this.newName = source["newName"];
+	    }
+	}
+	export class DeviceEdit {
+	    deviceId: number;
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeviceEdit(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.deviceId = source["deviceId"];
+	        this.name = source["name"];
+	    }
+	}
+	export class DiscoverField {
+	    key: string;
+	    label: string;
+	    value: string;
+	    secret: boolean;
+	    source: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiscoverField(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.label = source["label"];
+	        this.value = source["value"];
+	        this.secret = source["secret"];
+	        this.source = source["source"];
+	    }
+	}
+	export class DiscoverKafkaRow {
+	    hostname: string;
+	    ip: string;
+	    port: number;
+	    source: string;
+	    reachable: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiscoverKafkaRow(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hostname = source["hostname"];
+	        this.ip = source["ip"];
+	        this.port = source["port"];
+	        this.source = source["source"];
+	        this.reachable = source["reachable"];
+	    }
+	}
+	export class DiscoverKafkaOption {
+	    listener: string;
+	    security: string;
+	    interBroker: boolean;
+	    rows: DiscoverKafkaRow[];
+	    reachable: number;
+	    brokers: number;
+	    note: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiscoverKafkaOption(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.listener = source["listener"];
+	        this.security = source["security"];
+	        this.interBroker = source["interBroker"];
+	        this.rows = this.convertValues(source["rows"], DiscoverKafkaRow);
+	        this.reachable = source["reachable"];
+	        this.brokers = source["brokers"];
+	        this.note = source["note"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class DiscoverServer {
+	    name: string;
+	    addr: string;
+	    hostname: string;
+	    via: string;
+	    elevated: boolean;
+	    error: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiscoverServer(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.addr = source["addr"];
+	        this.hostname = source["hostname"];
+	        this.via = source["via"];
+	        this.elevated = source["elevated"];
+	        this.error = source["error"];
+	    }
+	}
+	export class DiscoverResult {
+	    fields: DiscoverField[];
+	    kafka: DiscoverKafkaOption[];
+	    kafkaChoice: number;
+	    kafkaReason: string;
+	    warnings: string[];
+	    servers: DiscoverServer[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DiscoverResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.fields = this.convertValues(source["fields"], DiscoverField);
+	        this.kafka = this.convertValues(source["kafka"], DiscoverKafkaOption);
+	        this.kafkaChoice = source["kafkaChoice"];
+	        this.kafkaReason = source["kafkaReason"];
+	        this.warnings = source["warnings"];
+	        this.servers = this.convertValues(source["servers"], DiscoverServer);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class ExistingDevice {
 	    deviceId: number;
 	    interfaceId: number;
@@ -1918,6 +2210,354 @@ export namespace statsreg {
 	        this.port = source["port"];
 	    }
 	}
+	export class PointOverride {
+	    checkpointId: number;
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PointOverride(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.checkpointId = source["checkpointId"];
+	        this.name = source["name"];
+	    }
+	}
+	export class RowEdit {
+	    shape: string;
+	    name: string;
+	    interval: number;
+	    overrides: PointOverride[];
+	
+	    static createFrom(source: any = {}) {
+	        return new RowEdit(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.shape = source["shape"];
+	        this.name = source["name"];
+	        this.interval = source["interval"];
+	        this.overrides = this.convertValues(source["overrides"], PointOverride);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ManageEdit {
+	    manageId: string;
+	    rows: RowEdit[];
+	    devices: DeviceEdit[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ManageEdit(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.manageId = source["manageId"];
+	        this.rows = this.convertValues(source["rows"], RowEdit);
+	        this.devices = this.convertValues(source["devices"], DeviceEdit);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ManageResult {
+	    id: string;
+	    committed: boolean;
+	    notified: boolean;
+	    pending: boolean;
+	    updated: number[];
+	    renamed: number[];
+	    conflicts: string[];
+	    watched: number;
+	    collected: number;
+	    missing: number[];
+	    verified: boolean;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ManageResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.committed = source["committed"];
+	        this.notified = source["notified"];
+	        this.pending = source["pending"];
+	        this.updated = source["updated"];
+	        this.renamed = source["renamed"];
+	        this.conflicts = source["conflicts"];
+	        this.watched = source["watched"];
+	        this.collected = source["collected"];
+	        this.missing = source["missing"];
+	        this.verified = source["verified"];
+	        this.message = source["message"];
+	    }
+	}
+	export class ManageOutcome {
+	    kind: string;
+	    rename: ManageResult;
+	    delete: DeleteResult;
+	
+	    static createFrom(source: any = {}) {
+	        return new ManageOutcome(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.rename = this.convertValues(source["rename"], ManageResult);
+	        this.delete = this.convertValues(source["delete"], DeleteResult);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PointChange {
+	    checkpointId: number;
+	    deviceId: number;
+	    interfaceId: number;
+	    deviceName: string;
+	    key: string;
+	    shape: string;
+	    oldName: string;
+	    newName: string;
+	    oldInterval: number;
+	    newInterval: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PointChange(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.checkpointId = source["checkpointId"];
+	        this.deviceId = source["deviceId"];
+	        this.interfaceId = source["interfaceId"];
+	        this.deviceName = source["deviceName"];
+	        this.key = source["key"];
+	        this.shape = source["shape"];
+	        this.oldName = source["oldName"];
+	        this.newName = source["newName"];
+	        this.oldInterval = source["oldInterval"];
+	        this.newInterval = source["newInterval"];
+	    }
+	}
+	export class ManagePreview {
+	    id: string;
+	    points: PointChange[];
+	    devices: DeviceChange[];
+	    renamed: number;
+	    intervals: number;
+	    touched: number;
+	    interfaces: number;
+	    warnings: string[];
+	    errors: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ManagePreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.points = this.convertValues(source["points"], PointChange);
+	        this.devices = this.convertValues(source["devices"], DeviceChange);
+	        this.renamed = source["renamed"];
+	        this.intervals = source["intervals"];
+	        this.touched = source["touched"];
+	        this.interfaces = source["interfaces"];
+	        this.warnings = source["warnings"];
+	        this.errors = source["errors"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	export class ManagedPoint {
+	    checkpointId: number;
+	    deviceId: number;
+	    interfaceId: number;
+	    key: string;
+	    name: string;
+	    interval: number;
+	    templateId: number;
+	    format: number;
+	    measure: string;
+	    host: string;
+	    rawName: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ManagedPoint(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.checkpointId = source["checkpointId"];
+	        this.deviceId = source["deviceId"];
+	        this.interfaceId = source["interfaceId"];
+	        this.key = source["key"];
+	        this.name = source["name"];
+	        this.interval = source["interval"];
+	        this.templateId = source["templateId"];
+	        this.format = source["format"];
+	        this.measure = source["measure"];
+	        this.host = source["host"];
+	        this.rawName = source["rawName"];
+	    }
+	}
+	export class ManagedRow {
+	    shape: string;
+	    template: string;
+	    points: ManagedPoint[];
+	    devices: number;
+	    rawName: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ManagedRow(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.shape = source["shape"];
+	        this.template = source["template"];
+	        this.points = this.convertValues(source["points"], ManagedPoint);
+	        this.devices = source["devices"];
+	        this.rawName = source["rawName"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ManagedGroup {
+	    id: string;
+	    groupId: number;
+	    name: string;
+	    devices: ManagedDevice[];
+	    rows: ManagedRow[];
+	    checkpoints: number;
+	    rawNames: number;
+	    otherDevices: string[];
+	    warnings: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ManagedGroup(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.groupId = source["groupId"];
+	        this.name = source["name"];
+	        this.devices = this.convertValues(source["devices"], ManagedDevice);
+	        this.rows = this.convertValues(source["rows"], ManagedRow);
+	        this.checkpoints = source["checkpoints"];
+	        this.rawNames = source["rawNames"];
+	        this.otherDevices = source["otherDevices"];
+	        this.warnings = source["warnings"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
 	export class Option {
 	    id: number;
 	    name: string;
@@ -1985,6 +2625,34 @@ export namespace statsreg {
 		    }
 		    return a;
 		}
+	}
+	export class PendingManage {
+	    id: string;
+	    kind: string;
+	    at: string;
+	    groupName: string;
+	    committed: boolean;
+	    sent: number;
+	    total: number;
+	    keysLeft: number;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PendingManage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.kind = source["kind"];
+	        this.at = source["at"];
+	        this.groupName = source["groupName"];
+	        this.committed = source["committed"];
+	        this.sent = source["sent"];
+	        this.total = source["total"];
+	        this.keysLeft = source["keysLeft"];
+	        this.message = source["message"];
+	    }
 	}
 	export class Point {
 	    key: string;
@@ -2099,6 +2767,8 @@ export namespace statsreg {
 		}
 	}
 	
+	
+	
 	export class Result {
 	    id: string;
 	    groupId: number;
@@ -2139,6 +2809,7 @@ export namespace statsreg {
 	        this.message = source["message"];
 	    }
 	}
+	
 	export class SavedConnection {
 	    config: Config;
 	    kafkaRows: KafkaRow[];

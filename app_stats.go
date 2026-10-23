@@ -35,9 +35,32 @@ func (a *App) StatsSaveConnection(c statsreg.SavedConnection) error {
 	return a.stats.SaveConnection(c)
 }
 
+// StatsClusterConnections returns the connection each cluster was set up with
+// ("MK119 리소스 수집 등록" ticked in the cluster dialog), by cluster id.
+func (a *App) StatsClusterConnections() (map[string]statsreg.SavedConnection, error) {
+	return a.stats.ClusterConnections()
+}
+
+// StatsSetClusterConnection stores the cluster's connection.
+func (a *App) StatsSetClusterConnection(clusterID string, c statsreg.SavedConnection) error {
+	return a.stats.SetClusterConnection(clusterID, &c)
+}
+
+// StatsDeleteClusterConnection forgets the cluster's connection (unticked, or
+// the cluster was deleted). No-op when there is none.
+func (a *App) StatsDeleteClusterConnection(clusterID string) error {
+	return a.stats.SetClusterConnection(clusterID, nil)
+}
+
 // StatsImportPatterns remembers the naming of an earlier, finished registration.
 func (a *App) StatsImportPatterns(id string) (statsreg.PatternEvent, error) {
 	return a.stats.ImportPatterns(id)
+}
+
+// StatsTesterPrefix is the tester name of a tester-only build ("" in a product
+// build), see statsreg.TesterPrefix.
+func (a *App) StatsTesterPrefix() string {
+	return statsreg.TesterPrefix
 }
 
 func (a *App) StatsRetry(c statsreg.Config, id string) (statsreg.Result, error) {

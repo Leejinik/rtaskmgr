@@ -298,8 +298,24 @@ export function StartScheduled(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['StartScheduled'](arg1, arg2, arg3, arg4);
 }
 
+export function StatsClusterConnections() {
+  return window['go']['main']['App']['StatsClusterConnections']();
+}
+
 export function StatsConnections() {
   return window['go']['main']['App']['StatsConnections']();
+}
+
+export function StatsDeleteClusterConnection(arg1) {
+  return window['go']['main']['App']['StatsDeleteClusterConnection'](arg1);
+}
+
+export function StatsDiscoverFromCluster(arg1) {
+  return window['go']['main']['App']['StatsDiscoverFromCluster'](arg1);
+}
+
+export function StatsDiscoverFromHosts(arg1) {
+  return window['go']['main']['App']['StatsDiscoverFromHosts'](arg1);
 }
 
 export function StatsImportPatterns(arg1) {
@@ -308,6 +324,38 @@ export function StatsImportPatterns(arg1) {
 
 export function StatsInspect(arg1) {
   return window['go']['main']['App']['StatsInspect'](arg1);
+}
+
+export function StatsManageApply(arg1) {
+  return window['go']['main']['App']['StatsManageApply'](arg1);
+}
+
+export function StatsManageDelete(arg1, arg2) {
+  return window['go']['main']['App']['StatsManageDelete'](arg1, arg2);
+}
+
+export function StatsManageDeletePreview(arg1) {
+  return window['go']['main']['App']['StatsManageDeletePreview'](arg1);
+}
+
+export function StatsManageLoad(arg1, arg2) {
+  return window['go']['main']['App']['StatsManageLoad'](arg1, arg2);
+}
+
+export function StatsManagePending() {
+  return window['go']['main']['App']['StatsManagePending']();
+}
+
+export function StatsManagePreview(arg1) {
+  return window['go']['main']['App']['StatsManagePreview'](arg1);
+}
+
+export function StatsManageRedisRetry(arg1, arg2) {
+  return window['go']['main']['App']['StatsManageRedisRetry'](arg1, arg2);
+}
+
+export function StatsManageResend(arg1, arg2) {
+  return window['go']['main']['App']['StatsManageResend'](arg1, arg2);
 }
 
 export function StatsRegister(arg1) {
@@ -320,6 +368,14 @@ export function StatsRetry(arg1, arg2) {
 
 export function StatsSaveConnection(arg1) {
   return window['go']['main']['App']['StatsSaveConnection'](arg1);
+}
+
+export function StatsSetClusterConnection(arg1, arg2) {
+  return window['go']['main']['App']['StatsSetClusterConnection'](arg1, arg2);
+}
+
+export function StatsTesterPrefix() {
+  return window['go']['main']['App']['StatsTesterPrefix']();
 }
 
 export function StatsValidate(arg1) {

@@ -167,12 +167,12 @@ func makePoints(values map[string]string, servers []Server, modules []module, te
 			}
 		}
 		if matches > 1 {
-			p.Warning = "대응하는 드라이버 템플릿이 여러 개입니다"
+			p.Warning = "제품 정의(드라이버 템플릿) 여러 개와 맞아 어느 것인지 몰라 기본 제외"
 			p.Selected = false
 			p.TemplateID = 0
 		}
 		if matches == 0 {
-			p.Warning = "드라이버 템플릿 없음: 직접 키 등록 (자료형 확인)"
+			p.Warning = "제품 정의(드라이버 템플릿) 없는 키: 이름을 넣지 않으면 키 그대로·단위 없이 등록됩니다 — 이름과 자료형(숫자/문자열)을 확인하세요"
 		}
 		if p.Interval <= 0 {
 			p.Interval = 10000
@@ -180,7 +180,7 @@ func makePoints(values map[string]string, servers []Server, modules []module, te
 		if p.Format != formatString && !javaNumber(values[key]) {
 			p.BadValue = true
 			p.Selected = false
-			p.Warning = strings.TrimSpace(p.Warning + fmt.Sprintf(" · 현재 값 %q 이(가) 숫자가 아님: Collector가 매 주기 오류를 내고 수집하지 않음(기본 제외)", values[key]))
+			p.Warning = strings.TrimSpace(p.Warning + fmt.Sprintf(" · 지금 값 %q 이(가) 숫자가 아니라 기본 제외: 숫자로 등록하면 Collector가 매 주기 이 키에서 오류를 내며 값을 하나도 못 모으고, 오류마다 0.1초씩 쉬어 다른 MK119 수집도 늦어집니다. 값이 숫자가 되면 다음 업데이트에서 추가하세요", values[key]))
 		}
 		tokens := braces.FindAllStringSubmatch(key, -1)
 		if len(tokens) == 0 {
@@ -198,7 +198,7 @@ func makePoints(values map[string]string, servers []Server, modules []module, te
 				}
 			}
 			if p.Host == "" {
-				p.Warning = strings.TrimSpace(p.Warning + " · 서버를 찾을 수 없음: 배치 선택 또는 제외")
+				p.Warning = strings.TrimSpace(p.Warning + " " + unplacedWarning)
 				p.Selected = false
 			}
 		}
@@ -209,6 +209,10 @@ func makePoints(values map[string]string, servers []Server, modules []module, te
 	}
 	return points
 }
+
+// unplacedWarning marks a key whose server is unknown (removed again when a
+// remembered placement places it).
+const unplacedWarning = "· 어느 서버의 키인지 모름: 서버를 고르거나 빼세요"
 
 // Data format code of a string point (0 Boolean, 1 Integer, 2 Long, 3 Double, 4 String).
 const formatString = 4

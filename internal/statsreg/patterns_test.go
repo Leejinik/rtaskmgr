@@ -104,7 +104,7 @@ func TestPatternRemembersManualPlacement(t *testing.T) {
 		t.Fatalf("%v %+v", e, ev)
 	}
 	p := Plan{Servers: []Server{{Hostname: "server01"}}, Points: []Point{
-		{Key: "liz.stats.logdb.{lizlogdb01}.status", Name: "x", TemplateID: 5, Format: 2, Interval: 10000, Warning: "· 서버를 찾을 수 없음: 배치 선택 또는 제외"},
+		{Key: "liz.stats.logdb.{lizlogdb01}.status", Name: "x", TemplateID: 5, Format: 2, Interval: 10000, Warning: unplacedWarning},
 		{Key: "liz.stats.logdb.{other}.status", Name: "y"},
 	}}
 	s.applyPatterns(&p)
@@ -286,5 +286,33 @@ func TestSavedConnectionsMostRecentFirst(t *testing.T) {
 	list, e := s.Connections()
 	if e != nil || len(list) != 2 || list[0].Config.DBHost != "a" || list[1].Config.DBHost != "b" || list[0].Config.DBPassword != "pw-a" {
 		t.Fatalf("%v %+v", e, list)
+	}
+}
+
+func TestClusterConnectionsSetAndRemove(t *testing.T) {
+	s := Service{ClusterConnectionFile: filepath.Join(t.TempDir(), "clusters.json")}
+	rows := []KafkaRow{{Hostname: "server01", IP: "10.0.0.1", Port: 9092}}
+	if e := s.SetClusterConnection("c1", &SavedConnection{Config: Config{DBHost: "10.0.0.1", RedisPassword: "pw"}, KafkaRows: rows}); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.SetClusterConnection("c2", &SavedConnection{Config: Config{DBHost: "10.0.0.9"}}); e != nil {
+		t.Fatal(e)
+	}
+	all, e := s.ClusterConnections()
+	if e != nil || len(all) != 2 || all["c1"].Config.RedisPassword != "pw" || all["c1"].KafkaRows[0].Hostname != "server01" || all["c1"].SavedAt == "" {
+		t.Fatalf("%v %+v", e, all)
+	}
+	if e := s.SetClusterConnection("c1", nil); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.SetClusterConnection("missing", nil); e != nil {
+		t.Fatal(e)
+	}
+	all, e = s.ClusterConnections()
+	if _, ok := all["c1"]; e != nil || ok || len(all) != 1 {
+		t.Fatalf("%v %+v", e, all)
+	}
+	if e := s.SetClusterConnection("", nil); e == nil {
+		t.Fatal("empty cluster id accepted")
 	}
 }

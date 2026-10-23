@@ -116,6 +116,7 @@ func checkLocation(ctx context.Context, q queryer, sel Selection) (int64, error)
 func (s *Service) Validate(ctx context.Context, sel Selection) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	sel = testerSelection(sel)
 	v, e := s.session(sel.PlanID)
 	if e != nil {
 		return e
@@ -150,49 +151,11 @@ type auditShape struct {
 // Copy entity snapshots into the existing Envers audit tables, inside the same
 // transaction. Only observed schema column names are used as SQL identifiers.
 func audit(ctx context.Context, tx *sql.Tx, cache map[string]auditShape, table string, id, rev int64, revtype int, entity string) error {
-	shape, cached := cache[table]
-	cols, base := shape.columns, shape.base
-	if !cached {
-		rows, e := tx.QueryContext(ctx, "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='liz' AND TABLE_NAME=? ORDER BY ORDINAL_POSITION", table+"_aud")
-		if e != nil {
-			return e
-		}
-		for rows.Next() {
-			var c string
-			if e = rows.Scan(&c); e != nil {
-				rows.Close()
-				return e
-			}
-			cols = append(cols, c)
-		}
-		e = rows.Err()
-		rows.Close()
-		if e != nil {
-			return e
-		}
-		if len(cols) == 0 {
-			return fmt.Errorf("감사 테이블이 없습니다: %s_aud", table)
-		}
-		rows, e = tx.QueryContext(ctx, "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='liz' AND TABLE_NAME=?", table)
-		if e != nil {
-			return e
-		}
-		base = map[string]bool{}
-		for rows.Next() {
-			var c string
-			if e = rows.Scan(&c); e != nil {
-				rows.Close()
-				return e
-			}
-			base[c] = true
-		}
-		e = rows.Err()
-		rows.Close()
-		if e != nil {
-			return e
-		}
-		cache[table] = auditShape{cols, base}
+	shape, e := auditColumns(ctx, tx, cache, table)
+	if e != nil {
+		return e
 	}
+	cols, base := shape.columns, shape.base
 	quoted := []string{}
 	expr := []string{}
 	args := []any{}
@@ -219,12 +182,61 @@ func audit(ctx context.Context, tx *sql.Tx, cache map[string]auditShape, table s
 		}
 	}
 	args = append(args, id)
-	_, e := tx.ExecContext(ctx, "INSERT INTO `"+table+"_aud` ("+strings.Join(quoted, ",")+") SELECT "+strings.Join(expr, ",")+" FROM `"+table+"` WHERE id=?", args...)
+	_, e = tx.ExecContext(ctx, "INSERT INTO `"+table+"_aud` ("+strings.Join(quoted, ",")+") SELECT "+strings.Join(expr, ",")+" FROM `"+table+"` WHERE id=?", args...)
 	if e != nil {
 		return e
 	}
 	_, e = tx.ExecContext(ctx, "INSERT INTO revchanges (rev,entityname) SELECT ?,? WHERE NOT EXISTS (SELECT 1 FROM revchanges WHERE rev=? AND entityname=?)", rev, entity, rev, entity)
 	return e
+}
+
+// auditColumns reads (once per transaction) the columns of table_aud and table.
+func auditColumns(ctx context.Context, tx *sql.Tx, cache map[string]auditShape, table string) (auditShape, error) {
+	shape, cached := cache[table]
+	cols, base := shape.columns, shape.base
+	if !cached {
+		rows, e := tx.QueryContext(ctx, "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='liz' AND TABLE_NAME=? ORDER BY ORDINAL_POSITION", table+"_aud")
+		if e != nil {
+			return shape, e
+		}
+		for rows.Next() {
+			var c string
+			if e = rows.Scan(&c); e != nil {
+				rows.Close()
+				return shape, e
+			}
+			cols = append(cols, c)
+		}
+		e = rows.Err()
+		rows.Close()
+		if e != nil {
+			return shape, e
+		}
+		if len(cols) == 0 {
+			return shape, fmt.Errorf("감사 테이블이 없습니다: %s_aud", table)
+		}
+		rows, e = tx.QueryContext(ctx, "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='liz' AND TABLE_NAME=?", table)
+		if e != nil {
+			return shape, e
+		}
+		base = map[string]bool{}
+		for rows.Next() {
+			var c string
+			if e = rows.Scan(&c); e != nil {
+				rows.Close()
+				return shape, e
+			}
+			base[c] = true
+		}
+		e = rows.Err()
+		rows.Close()
+		if e != nil {
+			return shape, e
+		}
+		shape = auditShape{cols, base}
+		cache[table] = shape
+	}
+	return shape, nil
 }
 
 func (s *Service) Register(ctx context.Context, sel Selection) (Result, error) {
@@ -251,6 +263,7 @@ func (s *Service) Register(ctx context.Context, sel Selection) (Result, error) {
 func (s *Service) register(ctx context.Context, sel Selection, rollbackOnly bool) (Result, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	sel = testerSelection(sel)
 	v, e := s.session(sel.PlanID)
 	if e != nil {
 		return Result{}, e
@@ -385,9 +398,9 @@ func (s *Service) register(ctx context.Context, sel Selection, rollbackOnly bool
 			}
 		}
 		if ev, e := s.learnPatterns(learn, "registration "+out.ID); e != nil {
-			out.Message += " (등록 패턴 저장 실패: " + e.Error() + ")"
+			out.Message += " (이름·주기 기억 실패: " + e.Error() + ")"
 		} else if n := len(ev.Changes); n > 0 {
-			out.Message += fmt.Sprintf(" 등록 패턴 %d건을 기억했습니다.", n)
+			out.Message += fmt.Sprintf(" 이번에 쓴 이름·주기 %d건을 기억해 다음 조회 때 같은 모양의 키에 미리 채웁니다.", n)
 		}
 	}
 	return out, nil
@@ -573,6 +586,9 @@ func registeredCount(ctx context.Context, q queryer, driverID int64, keys []stri
 	if len(keys) == 0 {
 		return 0, nil
 	}
+	if TesterPrefix != "" {
+		return testerRegisteredCount(ctx, q, driverID, keys)
+	}
 	args := []any{driverID}
 	for _, k := range keys {
 		args = append(args, k)
@@ -700,16 +716,14 @@ func (s *Service) send(ctx context.Context, c Config, rec *receipt, msgs []json.
 	if *sent >= len(msgs) {
 		return true
 	}
-	transport, e := kafkaTransport(c)
+	w, done, e := pipelineWriter(c)
 	if e != nil {
 		rec.Result.Message = fmt.Sprintf("%s 전송 준비 실패 — 「이어서 진행」으로 재시도하세요: %v", what, e)
 		return false
 	}
-	defer transport.CloseIdleConnections()
-	w := &kafka.Writer{Addr: kafka.TCP(brokers(c)...), Topic: "liz.message.pipeline", Balancer: &kafka.Hash{}, Transport: transport, RequiredAcks: kafka.RequireAll, WriteTimeout: 10 * time.Second, ReadTimeout: 10 * time.Second, MaxAttempts: 2}
-	defer w.Close()
+	defer done()
 	for *sent < len(msgs) {
-		if e = w.WriteMessages(ctx, kafka.Message{Key: []byte("rtaskmgr-stats"), Value: msgs[*sent]}); e != nil {
+		if e = w.WriteMessages(ctx, kafka.Message{Key: []byte(pipelineKey), Value: msgs[*sent]}); e != nil {
 			rec.Result.Message = fmt.Sprintf("%s 전송 실패 — 「이어서 진행」으로 재시도하세요(DB 재등록 없음): %v", what, e)
 			return false
 		}
@@ -720,6 +734,19 @@ func (s *Service) send(ctx context.Context, c Config, rec *receipt, msgs []json.
 		}
 	}
 	return true
+}
+
+// pipelineKey: one fixed key keeps every notice of this tool on one partition, in order.
+const pipelineKey = "rtaskmgr-stats"
+
+// pipelineWriter opens a writer for liz.message.pipeline; done closes it.
+func pipelineWriter(c Config) (*kafka.Writer, func(), error) {
+	transport, e := kafkaTransport(c)
+	if e != nil {
+		return nil, nil, e
+	}
+	w := &kafka.Writer{Addr: kafka.TCP(brokers(c)...), Topic: "liz.message.pipeline", Balancer: &kafka.Hash{}, Transport: transport, RequiredAcks: kafka.RequireAll, WriteTimeout: 10 * time.Second, ReadTimeout: 10 * time.Second, MaxAttempts: 2}
+	return w, func() { w.Close(); transport.CloseIdleConnections() }, nil
 }
 
 const defaultSettle = 30 * time.Second
@@ -894,7 +921,7 @@ func pointNotifications(r Result, from []int64) []json.RawMessage {
 
 func (s *Service) receiptPath(id string) (string, error) {
 	if _, e := uuid.Parse(id); e != nil {
-		return "", fmt.Errorf("잘못된 복구 ID")
+		return "", fmt.Errorf("잘못된 이어서 진행 번호")
 	}
 	dir := s.Directory
 	if dir == "" {

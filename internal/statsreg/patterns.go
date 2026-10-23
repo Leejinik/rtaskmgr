@@ -234,7 +234,7 @@ func (s *Service) applyPatterns(p *Plan) {
 			if h := f.Placements[toks[0]]; h != "" && hosts[h] {
 				// Placed by hand before, so it was wanted: selected unless a pattern says otherwise below.
 				pt.Host, pt.Selected = h, true
-				pt.Warning = strings.TrimSpace(strings.Replace(pt.Warning, "· 서버를 찾을 수 없음: 배치 선택 또는 제외", "", 1) + " · 기억된 배치: " + h)
+				pt.Warning = strings.TrimSpace(strings.Replace(pt.Warning, unplacedWarning, "", 1) + " · 전에 고른 서버: " + h)
 				placed++
 			}
 		}
@@ -258,7 +258,7 @@ func (s *Service) applyPatterns(p *Plan) {
 		applied++
 	}
 	if applied > 0 || placed > 0 {
-		p.PatternInfo = fmt.Sprintf("기억된 등록 패턴 %d개 적용(키 모양 %d종 저장됨), 기억된 서버 배치 %d개 적용. 바꾼 값은 등록 성공 시 다시 기억합니다.", applied, len(f.Patterns), placed)
+		p.PatternInfo = fmt.Sprintf("전에 쓴 이름·주기를 키 %d개에 미리 채웠습니다(이 PC가 기억하는 키 모양 %d종 — 키 모양: 서버 이름처럼 { } 안만 다른 키를 한 종류로 본 것). 전에 직접 서버를 고른 키 %d개는 같은 서버에 놓았습니다. 고친 이름·주기는 등록이 성공하면 다시 기억합니다.", applied, len(f.Patterns), placed)
 	}
 }
 

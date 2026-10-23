@@ -44,3 +44,42 @@
 .stats-new { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 8px; background: #fff3c4; color: #7a5200; font-size: 11px; font-weight: 600; }
 .stats-new-row td { background: rgba(255, 214, 102, 0.12); }
 .stats-moved { margin: 8px 0; }
+
+/* The same fields inside the cluster dialog (.modal), which styles labels and
+   inputs its own way. */
+.modal .stats-fields fieldset { min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 0; }
+.modal .stats-fields legend { font-size: 12px; color: var(--text-dim); }
+.modal .stats-fields label { display: flex; flex-direction: column; gap: 4px; margin: 0 0 8px; font-size: 12px; }
+.modal .stats-fields input:not([type=checkbox]), .modal .stats-fields select { min-width: 0; width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 6px 8px; border-radius: 5px; }
+.modal .stats-fields .stats-connections { gap: 10px; }
+.modal .stats-fields .stats-host-bindings { margin-top: 10px; }
+.modal .stats-fields button:disabled { opacity: .4; cursor: not-allowed; }
+
+/* Results first, so success or failure shows without scrolling. */
+.stats-result { border: 1px solid currentColor; border-radius: 6px; padding: 8px 12px; margin: 0 0 12px; }
+.stats-result p { margin: 4px 0; }
+.stats-error { color: #e5534b !important; font-size: 12px; }
+
+/* 기존 등록 관리 */
+.stats-inline { flex-direction: row !important; align-items: center; gap: 8px !important; margin: 0 !important; }
+.stats-inline select { width: auto !important; max-width: 520px; }
+.stats-check { flex-direction: row !important; align-items: center; gap: 6px !important; margin: 0 !important; }
+.stats-help { font-size: 12px; margin: 4px 0 10px; }
+.stats-help p { margin: 6px 0; }
+.stats-badge { display: inline-block !important; margin: 4px 6px 0 0 !important; padding: 0 6px; border-radius: 8px; border: 1px solid var(--border); }
+.stats-manage-table td:nth-child(2) { min-width: 260px; }
+.stats-manage-table td:nth-child(3), .stats-manage-table td:nth-child(4) { min-width: 0; width: auto; }
+.stats-manage-table td input { min-width: 110px; }
+.stats-manage-table td:last-child { min-width: 220px; }
+.stats-manage-table td:last-child .linkbtn { display: block; margin-top: 4px; font-size: 11px; text-align: left; }
+.stats-cell small { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stats-edited-row td { background: rgba(108, 182, 255, 0.10); }
+.stats-open-row td { background: var(--bg-panel, var(--bg)); }
+.stats-override { display: grid !important; grid-template-columns: 1fr minmax(220px, 320px); align-items: center; gap: 10px; margin: 0 0 6px !important; }
+.stats-danger { margin-top: 22px; border: 1px solid #e5534b; border-radius: 6px; padding: 8px 12px; font-size: 12px; }
+.stats-danger summary { color: #e5534b; cursor: pointer; }
+.stats-inner-scrim { z-index: 1100; }
+.stats-inner-dialog { width: min(900px, 92vw); max-height: 86vh; overflow: auto; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; box-shadow: 0 20px 70px #0008; font-size: 13px; }
+.stats-inner-dialog h3 { margin: 0 0 8px; font-size: 16px; }
+.stats-inner-dialog ul { margin: 4px 0 8px 18px; max-height: 160px; overflow: auto; }
+.stats-delete-dialog { border-color: #e5534b; }

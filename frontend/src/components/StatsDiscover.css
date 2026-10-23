@@ -1,0 +1,23 @@
+/* 「서버에서 불러오기」 button and its review list (cluster dialog). */
+.stats-discover-bar { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; flex-wrap: wrap; }
+.stats-discover-bar .stats-muted { flex: 1; min-width: 200px; }
+.sd-panel { border: 1px solid #6cb6ff; border-radius: 8px; padding: 10px 12px; margin: 0 0 12px; font-size: 12px; }
+.sd-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 8px; }
+.sd-muted { color: var(--text-mute); font-size: 11px; }
+.sd-bad { color: var(--bad, #e5534b); }
+.sd-good { color: var(--good, #49aa74); }
+.sd-warn { margin: 0 0 8px; padding-left: 18px; color: #dc973b; }
+.sd-warn li { margin: 2px 0; }
+.sd-table { width: 100%; border-collapse: collapse; margin: 4px 0 8px; table-layout: auto; }
+.sd-table th { text-align: left; font-weight: 600; color: var(--text-dim); }
+.sd-table td, .sd-table th { padding: 4px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.sd-table code { overflow-wrap: anywhere; user-select: text; }
+.sd-table td.sd-src { color: var(--text-mute); font-size: 11px; overflow-wrap: anywhere; user-select: text; }
+.sd-same td { opacity: .55; }
+.sd-old { text-decoration: line-through; color: var(--text-mute); }
+.modal .sd-panel label.sd-check { display: flex; align-items: baseline; gap: 6px; margin: 4px 0; font-size: 12px; cursor: pointer; }
+.sd-options { margin: 4px 0 4px 18px; }
+.sd-badge { margin-left: 6px; padding: 0 6px; border-radius: 8px; background: #6cb6ff33; color: #6cb6ff; font-size: 11px; font-weight: 600; }
+.sd-kafka p { margin: 4px 0; }
+.sd-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.sd-actions .sd-muted { flex: 1; }

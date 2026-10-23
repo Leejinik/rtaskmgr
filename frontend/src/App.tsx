@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { EventsOn } from "../wailsjs/runtime";
 import {
   ListHosts, Connect, Disconnect, DeleteHost, SetInterval,
-  ConnectMany, DisconnectMany,
+  ConnectMany, DisconnectMany, SaveHosts,
+  StatsDeleteClusterConnection,
   StartRecording, StopRecording,
   NethogsInstall, NethogsRollback,
   OpenLogDialog, LogFrameAt,
@@ -89,6 +90,8 @@ export default function App() {
   const [dialog, setDialog] = useState<{ open: boolean; editing?: host.Host }>({ open: false });
   const [clusterDialogOpen, setClusterDialogOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
+  // The cluster the registration was opened for (its saved connection is used).
+  const [statsCluster, setStatsCluster] = useState<{ id: string; name: string; addr: string } | null>(null);
   const [clusterEdit, setClusterEdit] = useState<{ id: string; name: string; hosts: host.Host[] } | null>(null);
   const [clusterPwDialog, setClusterPwDialog] = useState<{ id: string; name: string } | null>(null);
   const [ctx, setCtx] = useState<{ x: number; y: number; h: host.Host } | null>(null);
@@ -619,6 +622,20 @@ export default function App() {
     if (connect) void handleConnect(h.id);
   }
 
+  // A standalone host (the old "+ 호스트" way) becomes a one-server cluster
+  // named after it, keeping its id, credentials and jump settings.
+  async function convertToCluster(h: host.Host) {
+    try {
+      const cid = crypto.randomUUID();
+      await SaveHosts([host.Host.createFrom({ ...h, clusterId: cid, clusterName: h.name })]);
+      await refreshHosts();
+      openOverview(cid);
+      showToast(`'${h.name}' 을(를) 클러스터로 전환했습니다`);
+    } catch (e) {
+      showToast(`클러스터 전환 실패: ${e}`);
+    }
+  }
+
   async function handleDelete(id: string) {
     const h = hosts.find((x) => x.id === id);
     if (!window.confirm(`호스트 '${h?.name ?? id}' 을(를) 목록에서 삭제할까요?`)) return;
@@ -632,6 +649,11 @@ export default function App() {
   function selectHost(id: string) {
     setOverviewClusterId(null);
     setSelectedId(id);
+  }
+
+  function openStats(cluster: { id: string; name: string; addr: string } | null) {
+    setStatsCluster(cluster);
+    setStatsOpen(true);
   }
 
   function openOverview(cid: string) {
@@ -713,6 +735,7 @@ export default function App() {
     for (const id of ids) {
       await DeleteHost(id).catch((e) => showToast(`삭제 실패: ${e}`));
     }
+    await StatsDeleteClusterConnection(cid).catch(() => {});
     await refreshHosts();
     if (overviewClusterId === cid) setOverviewClusterId(null);
   }
@@ -945,10 +968,11 @@ export default function App() {
         <div className="sidebar-header">
           <span className="title">호스트</span>
           <div style={{ display: "flex", gap: 4 }}>
-            <button className="toolbtn primary" onClick={() => setDialog({ open: true })}>
-              + 호스트
-            </button>
-            <button className="toolbtn" onClick={() => setClusterDialogOpen(true)}>
+            {/* Hosts are added as clusters only, even a single server: log
+                collection, memory trend, capacity check and the MK119
+                registration live on the cluster view. */}
+            <button className="toolbtn primary" onClick={() => setClusterDialogOpen(true)}
+              title="서버 1대여도 클러스터로 등록합니다">
               + 클러스터
             </button>
           </div>
@@ -957,7 +981,7 @@ export default function App() {
         <div className="host-list">
           {hosts.length === 0 ? (
             <div className="sidebar-empty">
-              저장된 호스트가 없습니다.<br />“+ 호스트” 또는 “+ 클러스터”로 등록하세요.
+              저장된 호스트가 없습니다.<br />“+ 클러스터”로 등록하세요 (서버 1대도 가능).
             </div>
           ) : (
             <>
@@ -998,7 +1022,7 @@ export default function App() {
               })}
               {standalone.length > 0 && (
                 <>
-                  {clusterGroups.length > 0 && <div className="host-group-sep">개별 호스트</div>}
+                  <div className="host-group-sep" title="개별 호스트 등록은 더 이상 지원하지 않습니다. 우클릭 → 클러스터로 전환">개별 호스트 (우클릭 → 클러스터로 전환)</div>
                   {standalone.map((h) => renderHostItem(h, false))}
                 </>
               )}
@@ -1006,7 +1030,12 @@ export default function App() {
           )}
         </div>
         <div className="sidebar-footer">
-          <button className="toolbtn" style={{ width: "100%", marginBottom: 6 }} onClick={() => setStatsOpen(true)}>MK119 리소스 수집 등록</button>
+          <button className="toolbtn" style={{ width: "100%", marginBottom: 6 }} onClick={() => {
+            // The cluster on screen: the overview, or the selected host's cluster.
+            const cid = overviewClusterId ?? ((selected as any)?.clusterId as string | undefined);
+            const g = cid ? clusterGroups.find((x) => x.id === cid) : undefined;
+            openStats(g ? { id: g.id, name: g.name, addr: g.hosts[0]?.addr ?? "" } : null);
+          }}>MK119 리소스 수집 등록</button>
           {manualUpdate && (
             <button className="toolbtn"
               style={{
@@ -1030,7 +1059,7 @@ export default function App() {
       </aside>
 
       {/* ---- main ---- */}
-      {statsOpen && <StatsRegistration initialHost={selected?.addr || ""} onClose={() => setStatsOpen(false)} />}
+      {statsOpen && <StatsRegistration initialHost={statsCluster ? statsCluster.addr : selected?.addr || ""} cluster={statsCluster ?? undefined} onClose={() => setStatsOpen(false)} />}
       {overviewCluster ? (
         <ClusterOverview
           clusterName={overviewCluster.name}
@@ -1320,6 +1349,13 @@ export default function App() {
               onClick: () => setClusterPwDialog({ id: clusterCtx.id, name: clusterCtx.name }),
             },
             {
+              label: "📥 MK119 리소스 수집 등록",
+              onClick: () => {
+                const g = clusterGroups.find((x) => x.id === clusterCtx.id);
+                if (g) openStats({ id: g.id, name: g.name, addr: g.hosts[0]?.addr ?? "" });
+              },
+            },
+            {
               label: "클러스터 편집",
               onClick: () => {
                 const g = clusterGroups.find((x) => x.id === clusterCtx.id);
@@ -1372,6 +1408,7 @@ export default function App() {
           x={ctx.x}
           y={ctx.y}
           items={[
+            ...(ctx.h.clusterId ? [] : [{ label: "📦 클러스터로 전환", onClick: () => void convertToCluster(ctx.h) }]),
             { label: "🔑 패스워드 관리", onClick: () => setPwDialog({ hostId: ctx.h.id, name: ctx.h.name }) },
             { label: "편집", onClick: () => setDialog({ open: true, editing: ctx.h }) },
             { label: "삭제", danger: true, onClick: () => handleDelete(ctx.h.id) },
