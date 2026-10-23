@@ -1269,7 +1269,7 @@ func (s *Service) applyLocked(ctx context.Context, previewID string) (*manageRec
 	}
 	defer db.Close()
 	if e = checkKafka(ctx, m.Config); e != nil {
-		return nil, m.Config, ManageResult{}, fmt.Errorf("%w — 알림을 보낼 수 없어 아무것도 바꾸지 않았습니다", e)
+		return nil, m.Config, ManageResult{}, noteErr(e, " — 수집 서버에 알릴 수 없어 아무것도 바꾸지 않았습니다")
 	}
 	ip := localIP(m.Config)
 	s.progress("1/3 DB에 저장 중 — 체크포인트 %d개 · 장비 %d개", len(plan.points), len(plan.devices))

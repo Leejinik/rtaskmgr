@@ -47,9 +47,13 @@ func openRedisMaster(ctx context.Context, c Config) (*redisConn, error) {
 		case role == "master":
 			if info, err := n.Info(ctx, "cluster").Result(); err == nil && strings.Contains(info, "cluster_enabled:1") {
 				n.Close()
-				return openRedis(ctx, c) // cluster: the cluster client routes writes
+				r, err := openRedis(ctx, c) // cluster: the cluster client routes writes
+				if r != nil {
+					r.Master = "cluster"
+				}
+				return r, err
 			}
-			return &redisConn{UniversalClient: n, Info: "Redis 마스터 " + addr}, nil
+			return &redisConn{UniversalClient: n, Info: "Redis 마스터 " + addr, Master: addr}, nil
 		default:
 			notes = append(notes, fmt.Sprintf("%s: %s%s", addr, role, followNote(next)))
 			queue = append(queue, next...)
@@ -118,4 +122,34 @@ func nodeRole(ctx context.Context, n *redis.Client) (string, []string, error) {
 		return "복제본", nil, nil
 	}
 	return "", nil, fmt.Errorf("역할을 알 수 없습니다")
+}
+
+// redisSummary is what the screen says about Redis: how many addresses were
+// given and which one ROLE names master (2nd round: 「Redis 단일 노드 .24」 was
+// shown while .25 was master). The second value is the master ("" = none).
+func redisSummary(ctx context.Context, c Config, servers []Server, read *redisConn) (string, string) {
+	n := len(redisSeeds(c))
+	if read != nil && read.cluster != nil {
+		return fmt.Sprintf("Redis Cluster(서버 %d대 입력) · %s", n, read.Info), "cluster"
+	}
+	m, e := openRedisMaster(ctx, c)
+	if e != nil {
+		return fmt.Sprintf("Redis %d대 입력 · 마스터 없음 — 장비·그룹 삭제는 할 수 없습니다(Redis 에 남은 최근값을 지울 수 없음). 등록과 이름·주기 수정은 됩니다.\n자세히: %v", n, e), ""
+	}
+	defer m.Close()
+	return fmt.Sprintf("Redis %d대 입력 · 마스터 %s", n, serverOfAddr(m.Master, servers)), m.Master
+}
+
+// serverOfAddr names the server of host:port by its IP ("server_2 (192.0.2.12:5000)").
+func serverOfAddr(addr string, servers []Server) string {
+	h, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	for _, s := range servers {
+		if s.Hostname != "common" && (s.IP == h || strings.EqualFold(s.Hostname, h)) {
+			return s.Hostname + " (" + addr + ")"
+		}
+	}
+	return addr
 }

@@ -73,6 +73,7 @@ type redisConn struct {
 	redis.UniversalClient
 	cluster *redis.ClusterClient
 	Info    string // shown to the user: which topology was read
+	Master  string // openRedisMaster: the master's address ("cluster" for a Redis Cluster)
 }
 
 func openRedis(ctx context.Context, c Config) (*redisConn, error) {
@@ -91,7 +92,7 @@ func openRedis(ctx context.Context, c Config) (*redisConn, error) {
 		n.Close()
 	}
 	if probe == nil {
-		return nil, fmt.Errorf("Redis 연결 실패: %w", last)
+		return nil, redisError(strings.Join(seeds, ", "), last)
 	}
 	info, e := probe.Info(ctx, "cluster").Result()
 	if e != nil || !strings.Contains(info, "cluster_enabled:1") {

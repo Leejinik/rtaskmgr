@@ -75,6 +75,8 @@ type Plan struct {
 	GroupName   string          `json:"groupName"`
 	Warnings    []string        `json:"warnings"`
 	RedisInfo   string          `json:"redisInfo"`
+	// RedisMaster: the master found by ROLE ("" = none: deletes are refused).
+	RedisMaster string `json:"redisMaster"`
 	PatternInfo string          `json:"patternInfo"`
 	Existing    []ExistingGroup `json:"existing"`
 }

@@ -71,7 +71,7 @@ func openDB(ctx context.Context, c Config) (*sql.DB, error) {
 	db.SetConnMaxLifetime(5 * time.Minute)
 	if err = db.PingContext(ctx); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("MariaDB 연결 실패: %w", err)
+		return nil, dbError(c, err)
 	}
 	return db, nil
 }
@@ -104,43 +104,6 @@ func kafkaDialer(c Config) (*kafka.Dialer, error) {
 	}
 	return d, nil
 }
-func checkKafka(ctx context.Context, c Config) error {
-	d, err := kafkaDialer(c)
-	if err != nil {
-		return err
-	}
-	var last error
-	for _, addr := range brokers(c) {
-		conn, e := d.DialContext(ctx, "tcp", addr)
-		if e != nil {
-			last = e
-			continue
-		}
-		conn.SetDeadline(time.Now().Add(10 * time.Second))
-		parts, e := conn.ReadPartitions("liz.message.pipeline")
-		conn.Close()
-		if e != nil {
-			last = e
-			continue
-		}
-		if len(parts) == 0 {
-			last = fmt.Errorf("liz.message.pipeline 토픽이 없습니다")
-			continue
-		}
-		leader, e := d.DialLeader(ctx, "tcp", addr, "liz.message.pipeline", parts[0].ID)
-		if e != nil {
-			last = e
-			continue
-		}
-		leader.Close()
-		return nil
-	}
-	if last == nil {
-		last = fmt.Errorf("브로커 주소를 입력하세요")
-	}
-	return fmt.Errorf("Kafka 연결 실패: %w", last)
-}
-
 type queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 	QueryRowContext(context.Context, string, ...any) *sql.Row
@@ -323,6 +286,8 @@ func (s *Service) Inspect(ctx context.Context, c Config) (Plan, error) {
 		}
 		values[key] = v
 	}
+	// Which node is master, by ROLE — not the address that answered first.
+	p.RedisInfo, p.RedisMaster = redisSummary(ctx, c, p.Servers, r)
 	p.Points = makePoints(values, p.Servers, mods, cat.Templates)
 	p.Servers = append(p.Servers, Server{Hostname: "common", Name: "common"})
 	testerPlanDefaults(&p)

@@ -2727,6 +2727,7 @@ export namespace statsreg {
 	    groupName: string;
 	    warnings: string[];
 	    redisInfo: string;
+	    redisMaster: string;
 	    patternInfo: string;
 	    existing: ExistingGroup[];
 	
@@ -2744,6 +2745,7 @@ export namespace statsreg {
 	        this.groupName = source["groupName"];
 	        this.warnings = source["warnings"];
 	        this.redisInfo = source["redisInfo"];
+	        this.redisMaster = source["redisMaster"];
 	        this.patternInfo = source["patternInfo"];
 	        this.existing = this.convertValues(source["existing"], ExistingGroup);
 	    }

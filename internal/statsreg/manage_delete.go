@@ -445,13 +445,13 @@ func (s *Service) deleteLocked(ctx context.Context, previewID, confirm string) (
 	}
 	defer db.Close()
 	if e = checkKafka(ctx, m.Config); e != nil {
-		return nil, m.Config, DeleteResult{}, fmt.Errorf("%w — 알림을 보낼 수 없어 지우지 않았습니다", e)
+		return nil, m.Config, DeleteResult{}, noteErr(e, " — 수집 서버에 알릴 수 없어 아무것도 지우지 않았습니다")
 	}
 	// Checked before writing: the keys are deleted by this tool after the commit,
 	// and only a master takes a DEL.
 	r, e := openRedisMaster(ctx, m.Config)
 	if e != nil {
-		return nil, m.Config, DeleteResult{}, fmt.Errorf("%w — 수집값 키를 지울 수 없어 아무것도 지우지 않았습니다", e)
+		return nil, m.Config, DeleteResult{}, noteErr(e, " — Redis 에 남은 최근값을 지울 수 없어 아무것도 지우지 않았습니다")
 	}
 	r.Close()
 	s.progress("1/4 DB에서 삭제 중 — 장비 %d대 · 체크포인트 %d개", len(plan.devices), len(plan.checkpoints))

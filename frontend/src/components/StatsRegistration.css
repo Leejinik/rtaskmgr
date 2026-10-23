@@ -83,3 +83,8 @@
 .stats-inner-dialog h3 { margin: 0 0 8px; font-size: 16px; }
 .stats-inner-dialog ul { margin: 4px 0 8px 18px; max-height: 160px; overflow: auto; }
 .stats-delete-dialog { border-color: #e5534b; }
+
+/* The input a failed connection check named, and the raw error folded away. */
+.stats-dialog input.stats-bad, .modal .stats-fields input.stats-bad { border-color: #e5534b !important; box-shadow: 0 0 0 2px rgba(229, 83, 75, 0.35); }
+.stats-more { display: inline-block; margin-left: 8px; font-size: 11px; color: var(--text-mute); }
+.stats-more code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 760px; }
