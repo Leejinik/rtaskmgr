@@ -298,6 +298,10 @@ export function StartScheduled(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['StartScheduled'](arg1, arg2, arg3, arg4);
 }
 
+export function StatsCancelInspect() {
+  return window['go']['main']['App']['StatsCancelInspect']();
+}
+
 export function StatsClusterConnections() {
   return window['go']['main']['App']['StatsClusterConnections']();
 }

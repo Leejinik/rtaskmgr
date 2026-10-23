@@ -156,6 +156,8 @@ export function StartRecording(arg1:string):Promise<string>;
 
 export function StartScheduled(arg1:string,arg2:number,arg3:number,arg4:string):Promise<monitor.RecMeta>;
 
+export function StatsCancelInspect():Promise<void>;
+
 export function StatsClusterConnections():Promise<Record<string, statsreg.SavedConnection>>;
 
 export function StatsConnections():Promise<Array<statsreg.SavedConnection>>;

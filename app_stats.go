@@ -3,13 +3,33 @@ package main
 import (
 	"context"
 	"rtaskmgr/internal/statsreg"
+	"sync"
 	"time"
 )
 
+// The running 「연결 확인」, so the screen can cancel the automatic one it starts
+// when the dialog opens with a saved connection.
+var statsInspect struct {
+	sync.Mutex
+	cancel context.CancelFunc
+}
+
 func (a *App) StatsInspect(c statsreg.Config) (statsreg.Plan, error) {
 	ctx, cancel := context.WithTimeout(a.ctx, 2*time.Minute)
+	statsInspect.Lock()
+	statsInspect.cancel = cancel
+	statsInspect.Unlock()
 	defer cancel()
 	return a.stats.Inspect(ctx, c)
+}
+
+// StatsCancelInspect stops the running 「연결 확인」 (it is read-only, nothing to undo).
+func (a *App) StatsCancelInspect() {
+	statsInspect.Lock()
+	defer statsInspect.Unlock()
+	if statsInspect.cancel != nil {
+		statsInspect.cancel()
+	}
 }
 func (a *App) StatsValidate(s statsreg.Selection) error {
 	ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)

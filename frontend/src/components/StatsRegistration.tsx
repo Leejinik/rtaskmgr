@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { StatsInspect, StatsValidate, StatsRegister, StatsRetry, StatsImportPatterns, StatsConnections, StatsSaveConnection, StatsClusterConnections, StatsSetClusterConnection, StatsTesterPrefix } from "../../wailsjs/go/main/App";
+import { useEffect, useRef, useState } from "react";
+import { StatsInspect, StatsValidate, StatsRegister, StatsRetry, StatsImportPatterns, StatsConnections, StatsSaveConnection, StatsClusterConnections, StatsSetClusterConnection, StatsTesterPrefix, StatsCancelInspect } from "../../wailsjs/go/main/App";
 import { EventsOn } from "../../wailsjs/runtime";
 import { statsreg } from "../../wailsjs/go/models";
 import { useEsc } from "../useEsc";
@@ -68,16 +68,34 @@ export default function StatsRegistration({ initialHost, cluster, onClose }: { i
   const [clusterConn, setClusterConn] = useState<statsreg.SavedConnection | null>(null);
   const [discovery, setDiscovery] = useState<DiscoverResult | null>(null);
   const choices = clusterConn ? [clusterConn, ...saved] : saved;
-  function applySaved(c: statsreg.SavedConnection) { setConfig(c.config); if (c.kafkaRows?.length) setKafkaRows(c.kafkaRows.map(r => ({ hostname: r.hostname, ip: r.ip, port: r.port }))); }
+  // Where the fields came from when the dialog opened: the cluster's own saved
+  // connection, the most recent one, or nothing.
+  const [filledFrom, setFilledFrom] = useState<"" | "cluster" | "recent">("");
+  // Opened for a cluster without its own connection: save the one that checks out to it.
+  const [saveToCluster, setSaveToCluster] = useState(true);
+  // The automatic 「연결 확인」 started on opening (can be cancelled).
+  const [auto, setAuto] = useState(false);
+  const autoCancelled = useRef(false);
+  function rowsOf(c: statsreg.SavedConnection): KafkaRow[] | null { return c.kafkaRows?.length ? c.kafkaRows.map(r => ({ hostname: r.hostname, ip: r.ip, port: r.port })) : null; }
+  function applySaved(c: statsreg.SavedConnection) { setConfig(c.config); const rows = rowsOf(c); if (rows) setKafkaRows(rows); }
   // The most recent connection that inspected successfully is filled in.
-  // The cluster's own connection wins over the most recent one.
+  // The cluster's own connection wins over the most recent one. A connection
+  // saved for this cluster (or, outside a cluster, the most recent one) is
+  // checked right away; a failure stays on this screen with the input marked.
   useEffect(() => {
     Promise.all([StatsConnections().catch(() => []), cluster ? StatsClusterConnections().catch(() => ({})) : Promise.resolve({})]).then(([list, byCluster]) => {
       const own = cluster ? (byCluster as Record<string, statsreg.SavedConnection>)[cluster.id] : undefined;
       setSaved(list || []);
       setClusterConn(own || null);
       const first = own || list?.[0];
-      if (first) applySaved(first);
+      if (!first) return;
+      applySaved(first);
+      setFilledFrom(own ? "cluster" : "recent");
+      if (own || !cluster) {
+        setAuto(true);
+        autoCancelled.current = false;
+        work("저장된 접속 정보로 연결 확인 중… (취소할 수 있습니다)", () => connect(first.config, rowsOf(first) || kafkaRows, !!own)).finally(() => setAuto(false));
+      }
     });
   }, []);
 
@@ -88,17 +106,30 @@ export default function StatsRegistration({ initialHost, cluster, onClose }: { i
   function adopt(p: statsreg.Plan) { setPlan(p); setAskGroup(p.existing?.[0]?.groupId || 0); setSelection(new statsreg.Selection({ planId: p.id, groupName: p.groupName, explorerId: p.explorers[0].id, clusterId: p.clusters[0].id, servers: p.servers, points: p.points.map(pt => pt.registered ? { ...pt, selected: false } : pt), updateGroupId: 0 })); }
   // reinspect: 「연결 확인」 again with the same connection (registrations changed).
   async function reinspect() { const p = await StatsInspect(config); adopt(p); return p; }
+  // connect: 「연결 확인」. A successful connection is remembered; for the cluster
+  // too when it has its own connection or the user keeps 「이 클러스터에 저장」 ticked.
+  async function connect(base: statsreg.Config, rows: KafkaRow[], toCluster: boolean) {
+    const c = statsConnection(base, rows);
+    setConfig(c);
+    let p: statsreg.Plan;
+    try { p = await StatsInspect(c); } catch (e) { if (autoCancelled.current) throw new Error("저장된 접속 정보로 하던 연결 확인을 취소했습니다 — 값을 확인하고 「연결 확인」을 누르세요."); throw e; }
+    const conn = new statsreg.SavedConnection({ config: c, kafkaRows: rows, savedAt: "" });
+    StatsSaveConnection(conn).catch(() => {});
+    if (cluster && toCluster) { StatsSetClusterConnection(cluster.id, conn).then(() => { setClusterConn(conn); setFilledFrom("cluster"); }).catch(() => {}); }
+    adopt(p); setResult(null); setMode("");
+  }
 
   return <div className="scrim stats-scrim"><div className="stats-dialog" role="dialog" aria-modal="true" aria-labelledby="stats-title" onKeyDown={e => { e.stopPropagation(); if (e.key === "Escape" && !busy && !inner) { e.preventDefault(); onClose(); } }}>
     <div className="stats-head"><div><h2 id="stats-title">MK119 v10 리소스 수집 등록</h2><p>연결 확인 → 「새로 등록」(서버별 체크포인트 선택 → 등록 전 검사 → 등록: 장비 → 반영 대기 → 체크포인트 → 수집 확인) 또는 「기존 등록 관리」(이름·주기 수정, 장비·그룹 삭제)</p>{tester && <p className="stats-warning" role="note">🧪 테스트 빌드: {tester} — 그룹·장비 이름에 {tester} 접두어가 붙고, {tester} 그룹만 기존 등록으로 봅니다</p>}</div><button className="toolbtn" disabled={!!busy} onClick={onClose}>닫기</button></div>
     <div className="stats-body">
     {!plan && <>
-      {cluster && <p className="stats-muted">{clusterConn ? <>📦 클러스터 <b>{cluster.name}</b>에 저장된 접속 정보를 채웠습니다. 연결 확인에 성공하면 고친 내용도 클러스터에 저장됩니다.</> : <>📦 클러스터 <b>{cluster.name}</b>에 저장된 접속 정보가 없습니다. 클러스터 편집에서 「MK119 리소스 수집 등록」을 체크하면 저장해 둘 수 있습니다.</>}</p>}
+      {cluster && (clusterConn ? <p className="stats-muted">📦 클러스터 <b>{cluster.name}</b>에 저장해 둔 접속 정보로 채웠습니다. 연결 확인에 성공하면 고친 내용도 이 클러스터에 저장합니다.</p>
+        : <p className="stats-muted">📦 클러스터 <b>{cluster.name}</b>에는 아직 저장된 접속 정보가 없습니다 — {filledFrom === "recent" ? <>아래 칸은 <b>최근에 쓴 다른 연결</b>로 채운 것이니 이 클러스터 것이 맞는지 확인하세요(「서버에서 불러오기」로 이 클러스터 서버에서 읽어 올 수도 있습니다).</> : <>「서버에서 불러오기」로 채우거나 직접 입력하세요.</>} <label className="stats-check stats-inline-check"><input type="checkbox" checked={saveToCluster} disabled={!!busy} onChange={e => setSaveToCluster(e.target.checked)} />연결 확인에 성공하면 이 클러스터에 저장</label></p>)}
       {choices.length > 1 && <label className="stats-recent">최근 연결<select disabled={!!busy} defaultValue={0} onChange={e => applySaved(choices[Number(e.target.value)])}>{choices.map((c, i) => <option key={i} value={i}>{c === clusterConn ? `📦 ${cluster?.name} · ` : ""}{c.config.dbHost}:{c.config.dbPort} · Redis {c.config.redisHost} · {c.savedAt.slice(0, 16).replace("T", " ")}</option>)}</select></label>}
       {discovery && <StatsDiscoverReview result={discovery} config={config} baseline={defaultStatsConfig(initialHost)} kafkaRows={kafkaRows} onApply={(c, rows) => { setConfig(c); if (rows) setKafkaRows(() => rows); setDiscovery(null); }} onClose={() => setDiscovery(null)} />}
       <StatsConnectionFields bad={parseStatsMessage(error).field} config={config} setConfig={setConfig} kafkaRows={kafkaRows} setKafkaRows={setKafkaRows} disabled={!!busy} onDiscover={cluster ? () => work("서버에서 접속 정보 읽는 중…", async () => setDiscovery(await discoverFromCluster(cluster.id))) : undefined} discovering={busy === "서버에서 접속 정보 읽는 중…"} />
       <p className="stats-muted">연결 확인에 성공한 접속 정보는 비밀번호를 포함해 이 PC의 ~/.rtaskmgr/stats-connections.json에 저장되고 다음에 자동으로 채워집니다. Kafka 토픽: liz.message.pipeline</p>
-      <button className="toolbtn primary" disabled={!!busy} onClick={() => work("연결 및 Redis 키 분석 중…", async () => { const c = connectionConfig(); setConfig(c); const p = await StatsInspect(c); StatsSaveConnection(new statsreg.SavedConnection({ config: c, kafkaRows, savedAt: "" })).catch(() => {}); if (cluster && clusterConn) StatsSetClusterConnection(cluster.id, new statsreg.SavedConnection({ config: c, kafkaRows, savedAt: "" })).catch(() => {}); adopt(p); setResult(null); setMode(""); })}>연결 확인 및 liz.stats.* 조회</button>
+      <button className="toolbtn primary" disabled={!!busy} onClick={() => { autoCancelled.current = false; work("연결 및 Redis 키 분석 중…", () => connect(config, kafkaRows, !!clusterConn || saveToCluster)); }}>연결 확인 및 liz.stats.* 조회</button>
       <details className="stats-recovery"><summary>이전 등록 이어서 진행 / 수집 다시 확인</summary><p className="stats-muted">등록이 중간에 멈췄을 때(창을 닫음, 알림 실패, 반영 대기 중 중단 등) 등록 결과에 나온 「이어서 진행 번호」를 넣으면 이미 저장된 것은 다시 만들지 않고 남은 단계만 합니다. 다 끝난 등록이면 수집 확인만 다시 합니다. 번호별 기록은 이 PC의 ~/.rtaskmgr/stats-registration 폴더에 있습니다.</p><label>이어서 진행 번호<input value={retryID} onChange={e => setRetryID(e.target.value)} /></label><button className="toolbtn" disabled={!!busy || !retryID} onClick={() => work("저장 상태 확인 후 이어서 진행…", async () => { const c = connectionConfig(); setConfig(c); setResult(await StatsRetry(c, retryID)); })}>이어서 진행 (DB 재등록 없음)</button><button className="toolbtn" title="그 등록에 쓴 체크포인트 이름·주기를 키 모양별로 이 PC에 기억해, 다음 조회 때 같은 모양의 키에 미리 채웁니다" disabled={!!busy || !retryID} onClick={() => work("이름·주기 기억 중…", async () => { const ev = await StatsImportPatterns(retryID); setError(`이름·주기 ${ev.changes?.length || 0}건 기억${ev.notes?.length ? ` · 장비마다 이름이 다른 키 ${ev.notes.length}종(가장 많이 쓴 이름 채택)` : ""}`); })}>이 등록에 쓴 이름·주기 기억</button></details>
     </>}
     {plan && selection && mode === "" && <div className="stats-update-ask">
@@ -118,7 +149,7 @@ export default function StatsRegistration({ initialHost, cluster, onClose }: { i
     </div>}
     {plan && mode === "manage" && <StatsManage plan={plan} busy={busy} work={work} reinspect={reinspect} onDialog={setInner} />}
     {plan && selection && (mode === "new" || mode === "update") && <>
-      {result && <div className={result.verified ? "stats-success stats-result" : "stats-warning stats-result"} role="status"><p><b>등록 결과</b> — {result.message}</p>{result.notified && result.checkpointIds.length + (result.movedIds?.length || 0) > 0 && <p>수집 확인: {result.collected}/{result.checkpointIds.length + (result.movedIds?.length || 0)}개{result.missing?.length ? ` · 값이 안 들어온 체크포인트 ${result.missing.length}개` : ""}</p>}<p>이어서 진행 번호: <code>{result.id}</code> <small>등록이 중간에 멈췄을 때 「연결 설정」 → 「이전 등록 이어서 진행」에 넣으면 남은 단계만 다시 합니다(이 PC에 기록됨).</small></p>{!result.verified && <button className="toolbtn" disabled={!!busy} onClick={() => work(result.notified ? "수집 다시 확인 중…" : "저장 상태 확인 후 이어서 진행…", async () => setResult(await StatsRetry(config, result.id)))}>{result.notified ? "수집 다시 확인" : "이어서 진행 (DB 재등록 없음)"}</button>}</div>}
+      {result && <div className={result.verified ? "stats-success stats-result" : "stats-warning stats-result"} role="status"><p><b>등록 결과</b> — {result.message}</p>{result.notified && result.checkpointIds.length + (result.movedIds?.length || 0) > 0 && <p>수집 확인: {result.collected}/{result.checkpointIds.length + (result.movedIds?.length || 0)}개{result.missing?.length ? ` · 값이 안 들어온 체크포인트 ${result.missing.length}개` : ""}</p>}<p>이어서 진행 번호: <code>{result.id}</code> <small>등록이 중간에 멈췄을 때 「연결 설정」 → 「이전 등록 이어서 진행」에 넣으면 남은 단계만 다시 합니다(이 PC에 기록됨).</small></p>{result.committed && <div className="stats-update-buttons"><button className="toolbtn primary" disabled={!!busy} onClick={() => work("기존 등록 관리 화면 준비 중…", async () => { await reinspect(); setResult(null); setMode("manage"); })}>기존 등록 관리로 (이름·주기 정리)</button><span className="stats-muted">방금 등록한 이름이 키 그대로인 것을 바로 고칠 수 있습니다. 같은 접속 정보로 다시 조회하므로 연결 확인을 누르지 않아도 됩니다.</span></div>}{!result.verified && <button className="toolbtn" disabled={!!busy} onClick={() => work(result.notified ? "수집 다시 확인 중…" : "저장 상태 확인 후 이어서 진행…", async () => setResult(await StatsRetry(config, result.id)))}>{result.notified ? "수집 다시 확인" : "이어서 진행 (DB 재등록 없음)"}</button>}</div>}
       <fieldset disabled={!!busy || !!result} className="stats-settings"><legend>{mode === "update" ? "업데이트 대상과 새 장비 이름" : "등록 위치와 이름"}</legend>
         <label>Device Group{mode === "update" ? " (업데이트)" : ""}<input value={selection.groupName} disabled={mode === "update"} onChange={e => edit({ groupName: e.target.value })} /></label>
         <label>장비 탐색기<select value={selection.explorerId} onChange={e => edit({ explorerId: Number(e.target.value) })}>{plan.explorers.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></label>
@@ -147,6 +178,6 @@ export default function StatsRegistration({ initialHost, cluster, onClose }: { i
     </>}
     {result && !plan && <div className={result.verified ? "stats-success stats-result" : "stats-warning stats-result"} role="status"><p>{result.message}</p><p>이어서 진행 번호: <code>{result.id}</code></p>{!result.verified && <button className="toolbtn" disabled={!!busy} onClick={() => work(result.notified ? "수집 다시 확인 중…" : "저장 상태 확인 후 이어서 진행…", async () => setResult(await StatsRetry(config, result.id)))}>{result.notified ? "수집 다시 확인" : "이어서 진행 (DB 재등록 없음)"}</button>}</div>}
     </div>
-    <div className="stats-footer"><div role="status">{(busy && (progress || busy)) || (error && <StatsMessage text={error} />) || (checked ? "등록 전 검사 통과 — 이름(1~100자)·서버·자료형·주기·장비 탐색기·Collector 클러스터를 확인했습니다. 아직 저장하지 않았습니다." : "")}</div>{plan && (mode === "ask" || mode === "manage") && <><button className="toolbtn" disabled={!!busy} onClick={() => mode === "manage" ? work("다시 조회 중…", async () => { await reinspect(); setMode(""); }) : setMode("")}>← 처음 선택으로</button><button className="toolbtn" disabled={!!busy} onClick={() => { setPlan(null); setSelection(null); setChecked(false); setMode(""); }}>연결 설정</button></>}{plan && selection && !result && (mode === "new" || mode === "update") && <><button className="toolbtn" disabled={!!busy} onClick={() => { setPlan(null); setSelection(null); setChecked(false); setMode(""); }}>연결 설정</button><button className="toolbtn" title="저장하지 않고 이름(1~100자)·서버 배치·자료형·주기·장비 탐색기·Collector 클러스터만 확인합니다" disabled={!!busy || !(count + moveCount)} onClick={() => work("등록 전 검사 중…", async () => { setChecked(false); await StatsValidate(uniqueServers(selection)); setChecked(true); })}>등록 전 검사</button><button className="toolbtn primary" disabled={!!busy || !checked || !(count + moveCount)} onClick={() => work("등록 중…", async () => { setChecked(false); setResult(await StatsRegister(uniqueServers(selection))); })}>{mode === "update" ? `업데이트: 새 장비 ${newDeviceCount}개 · 체크포인트 ${count}개 추가${moveCount ? ` · ${moveCount}개 옮기기` : ""}` : `장비 ${deviceCount}개 · 체크포인트 ${count}개 등록`}</button></>}</div>
+    <div className="stats-footer">{auto && busy && <button className="toolbtn" onClick={() => { autoCancelled.current = true; StatsCancelInspect().catch(() => {}); }}>취소</button>}<div role="status">{(busy && (progress || busy)) || (error && <StatsMessage text={error} />) || (checked ? "등록 전 검사 통과 — 이름(1~100자)·서버·자료형·주기·장비 탐색기·Collector 클러스터를 확인했습니다. 아직 저장하지 않았습니다." : "")}</div>{plan && (mode === "ask" || mode === "manage") && <><button className="toolbtn" disabled={!!busy} onClick={() => mode === "manage" ? work("다시 조회 중…", async () => { await reinspect(); setMode(""); }) : setMode("")}>← 처음 선택으로</button><button className="toolbtn" disabled={!!busy} onClick={() => { setPlan(null); setSelection(null); setChecked(false); setMode(""); }}>연결 설정</button></>}{plan && selection && !result && (mode === "new" || mode === "update") && <><button className="toolbtn" disabled={!!busy} onClick={() => { setPlan(null); setSelection(null); setChecked(false); setMode(""); }}>연결 설정</button><button className="toolbtn" title="저장하지 않고 이름(1~100자)·서버 배치·자료형·주기·장비 탐색기·Collector 클러스터만 확인합니다" disabled={!!busy || !(count + moveCount)} onClick={() => work("등록 전 검사 중…", async () => { setChecked(false); await StatsValidate(uniqueServers(selection)); setChecked(true); })}>등록 전 검사</button><button className="toolbtn primary" disabled={!!busy || !checked || !(count + moveCount)} onClick={() => work("등록 중…", async () => { setChecked(false); setResult(await StatsRegister(uniqueServers(selection))); })}>{mode === "update" ? `업데이트: 새 장비 ${newDeviceCount}개 · 체크포인트 ${count}개 추가${moveCount ? ` · ${moveCount}개 옮기기` : ""}` : `장비 ${deviceCount}개 · 체크포인트 ${count}개 등록`}</button></>}</div>
   </div></div>;
 }
