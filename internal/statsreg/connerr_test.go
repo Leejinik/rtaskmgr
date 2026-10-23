@@ -2,6 +2,7 @@ package statsreg
 
 import (
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -66,5 +67,25 @@ func TestServerOfAddr(t *testing.T) {
 	}
 	if got := serverOfAddr("192.0.2.99:5000", servers); got != "192.0.2.99:5000" {
 		t.Fatal(got)
+	}
+}
+
+// 3rd round: a cut network while reading the topic said 「MK119 의 Kafka 인지 확인하세요」.
+func TestKafkaReadErrorSaysTheConnectionWasLost(t *testing.T) {
+	for _, err := range []error{
+		errors.New("read tcp 192.0.2.1:50000->192.0.2.11:19092: wsarecv: An existing connection was forcibly closed by the remote host."),
+		errors.New("read: connection reset by peer"),
+		io.EOF,
+		&net.OpError{Op: "dial", Err: errors.New("connection refused")},
+		errors.New("i/o timeout"),
+	} {
+		fe := kafkaReadError(1, err).(*fieldError)
+		if fe.field != "kafka.1" || !strings.Contains(fe.summary, "2번째 서버와 연결이 끊겼습니다") || strings.Contains(fe.summary, "MK119 의 Kafka") {
+			t.Errorf("%v → %q", err, fe.summary)
+		}
+	}
+	fe := kafkaReadError(0, kafka.UnknownTopicOrPartition).(*fieldError)
+	if !strings.Contains(fe.summary, "MK119 의 Kafka 인지 확인하세요") {
+		t.Fatalf("topic error: %q", fe.summary)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -100,6 +101,29 @@ func kafkaRow(i int, addr string, bindings map[string]string) (host, port, targe
 	return host, port, mappedKafkaAddress(addr, bindings)
 }
 
+// connLost: the connection broke or never answered — not a wrong setting.
+// 3rd round: a cut network ("forcibly closed") read as 「MK119 의 Kafka 인지 확인하세요」.
+func connLost(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, s := range []string{"forcibly closed", "connection reset", "broken pipe", "connection aborted", "use of closed network connection", "eof"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return netKind(err) != ""
+}
+
+// kafkaReadError: the i-th server took the connection but reading the topic failed.
+func kafkaReadError(i int, err error) error {
+	if connLost(err) {
+		return &fieldError{fmt.Sprintf("kafka.%d", i), fmt.Sprintf("Kafka %d번째 서버와 연결이 끊겼습니다 — 네트워크·서버 상태를 확인한 뒤 다시 하세요", i+1), err}
+	}
+	return &fieldError{fmt.Sprintf("kafka.%d", i), fmt.Sprintf("Kafka %d번째 서버에서 liz.message.pipeline 토픽을 읽지 못했습니다 — MK119 의 Kafka 인지 확인하세요", i+1), err}
+}
+
 func kafkaRowError(i int, addr string, bindings map[string]string, err error) error {
 	host, _, target := kafkaRow(i, addr, bindings)
 	where := fmt.Sprintf("Kafka %d번째 서버(%s → %s)", i+1, host, target)
@@ -110,6 +134,9 @@ func kafkaRowError(i int, addr string, bindings map[string]string, err error) er
 		return &fieldError{fmt.Sprintf("kafka.%d.port", i), where + ": 연결을 거부했습니다(그 포트에 Kafka 가 없음) — 포트를 확인하세요", err}
 	case "timeout":
 		return &fieldError{fmt.Sprintf("kafka.%d", i), where + ": 응답이 없습니다(시간 초과) — IP·포트·방화벽을 확인하세요", err}
+	}
+	if connLost(err) {
+		return &fieldError{fmt.Sprintf("kafka.%d", i), where + ": 연결이 끊겼습니다 — 네트워크·서버 상태를 확인한 뒤 다시 하세요", err}
 	}
 	return &fieldError{fmt.Sprintf("kafka.%d", i), where + ": 연결하지 못했습니다", err}
 }
@@ -159,7 +186,7 @@ func checkKafka(ctx context.Context, c Config) error {
 		parts, e := conn.ReadPartitions("liz.message.pipeline")
 		conn.Close()
 		if e != nil {
-			keep(&fieldError{fmt.Sprintf("kafka.%d", i), fmt.Sprintf("Kafka %d번째 서버에서 liz.message.pipeline 토픽을 읽지 못했습니다 — MK119 의 Kafka 인지 확인하세요", i+1), e})
+			keep(kafkaReadError(i, e))
 			continue
 		}
 		if len(parts) == 0 {
