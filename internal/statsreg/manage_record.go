@@ -314,7 +314,7 @@ func (s *Service) ManageRedisRetry(ctx context.Context, planID, id string) (Dele
 		return rec.Delete, nil
 	}
 	if rec.Sent < len(rec.Msgs) {
-		return rec.Delete, fmt.Errorf("알림 %d/%d건만 보냈습니다 — 「알림 다시 보내기」부터 하세요(Collector가 아직 이 장비를 수집하면 키가 다시 생깁니다)", rec.Sent, len(rec.Msgs))
+		return rec.Delete, fmt.Errorf("알림 %d/%d건만 보냈습니다 — 「수집 서버에 다시 알리기」부터 하세요(수집 서버가 아직 이 장비를 수집하면 최근값이 다시 생깁니다)", rec.Sent, len(rec.Msgs))
 	}
 	keys, e := deletedKeysOf(ctx, cfg, rec.DeviceIDs)
 	if e != nil {

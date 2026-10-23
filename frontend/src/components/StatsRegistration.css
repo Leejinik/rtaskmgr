@@ -94,3 +94,4 @@
 .stats-manage-table .stats-interval-col input { min-width: 110px; }
 .stats-delete-names { margin: 2px 0 6px; }
 .stats-delete-names ol { max-height: 220px; overflow: auto; margin: 4px 0 0 18px; }
+.stats-more-block { margin-top: 8px; }

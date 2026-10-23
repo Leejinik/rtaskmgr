@@ -185,11 +185,11 @@ func summarizeCollection(r *Result, seen map[int64]int, watchErr error) {
 	r.Verified = len(r.Missing) == 0 && partial == 0
 	switch {
 	case r.Verified:
-		r.Message = saved + " 완료. 체크포인트 전부 Collector가 값을 갱신하고 있습니다."
+		r.Message = saved + " 완료. 체크포인트 전부 수집 서버가 값을 갱신하고 있습니다."
 	case len(r.Missing) == 0:
 		r.Message = fmt.Sprintf("%s 완료. 모든 체크포인트에 값이 있지만 %d개는 확인 시간 안에 갱신이 안 됐습니다(원본 키가 멈췄거나 주기가 김) — 「수집 다시 확인」으로 한 번 더 보세요.", saved, partial)
 	default:
-		r.Message = fmt.Sprintf("%s 완료, 하지만 수집 확인 %d/%d개. 값이 없는 체크포인트: %s. 원본 Redis 키가 없거나 Collector가 수집을 멈췄을 수 있습니다 — Active Collector의 journal(journalctl -u lizcollector)에서 LizSystemStatusHandlerWorker 오류를 확인하세요. 재등록하지 마세요(중복 생성됩니다).",
+		r.Message = fmt.Sprintf("%s 완료, 하지만 수집 확인 %d/%d개. 값이 없는 체크포인트: %s. 원본 Redis 키가 없거나 수집 서버가 수집을 멈췄을 수 있습니다 — 재등록하지 마세요(중복 생성됩니다).\n자세히: Active Collector 의 journal(journalctl -u lizcollector)에서 LizSystemStatusHandlerWorker 오류를 확인하세요.",
 			saved, r.Collected, total, idList(r.Missing, 20))
 	}
 	if watchErr != nil {

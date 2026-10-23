@@ -39,6 +39,16 @@ import (
 
 const manageTTL = 30 * time.Minute
 
+// One wording for the tester build everywhere (2nd round met 「claude 접두어」
+// and 「claude_ 로 시작」 for the same rule).
+func testerGroupRule() string {
+	return fmt.Sprintf("테스트 빌드는 이름 앞에 「%s」가 붙은 그룹(%s…)만 다룹니다", TesterPrefix, testerGroupPrefix())
+}
+
+func testerDeviceRule() string {
+	return fmt.Sprintf("테스트 빌드는 이름 앞에 「%s」가 붙은 장비(%s…)만 다룹니다", TesterPrefix, testerDevicePrefix())
+}
+
 type manageState struct {
 	sessions map[string]*manageSession
 	// run serializes applies, deletes and their resends. s.mu is held only while
@@ -369,7 +379,7 @@ func deviceLocks(ctx context.Context, q queryer, rule int64, devices []ManagedDe
 		case len(groups[d.DeviceID]) > 0:
 			d.Locked = "다른 그룹에도 들어 있는 장비라(" + strings.Join(groups[d.DeviceID], ", ") + ") 여기서 바꾸거나 지우면 그 그룹에도 반영됩니다 — admin 에서 정리하세요"
 		case TesterPrefix != "" && !strings.HasPrefix(d.Name, testerDevicePrefix()):
-			d.Locked = fmt.Sprintf("테스트 빌드(%s)는 이름이 %q 로 시작하는 장비만 바꾸거나 지웁니다", TesterPrefix, testerDevicePrefix())
+			d.Locked = testerDeviceRule()
 		}
 	}
 	return nil
@@ -432,7 +442,7 @@ func loadManaged(ctx context.Context, q queryer, groupID, driverID int64, plan P
 		return nil, e
 	}
 	if !testerOwnsGroup(name) {
-		return nil, fmt.Errorf("테스트 빌드(%s)는 %s 로 시작하는 그룹만 관리합니다: %s", TesterPrefix, testerGroupPrefix(), name)
+		return nil, fmt.Errorf("%s: %s", testerGroupRule(), name)
 	}
 	m := &manageSession{rule: rule, points: map[int64]ManagedPoint{}, devices: map[int64]ManagedDevice{}, previews: map[string]managePlan{}, removals: map[string]deletePlan{},
 		Group: ManagedGroup{GroupID: groupID, Name: name, Devices: []ManagedDevice{}, Rows: []ManagedRow{}, OtherDevices: []string{}, Warnings: []string{}}}
@@ -723,7 +733,7 @@ func resolveEdit(m *manageSession, edit ManageEdit) (managePlan, []string, []str
 	for _, re := range edit.Rows {
 		row, ok := rows[re.Shape]
 		if !ok || seenShape[re.Shape] {
-			errs = append(errs, fmt.Sprintf("목록에 없거나 두 번 들어온 키 모양입니다: %s — 다시 불러오세요", re.Shape))
+			errs = append(errs, fmt.Sprintf("목록에 없거나 두 번 들어온 키 묶음입니다: %s — 다시 불러오세요", re.Shape))
 			continue
 		}
 		seenShape[re.Shape] = true
@@ -1158,7 +1168,7 @@ func checkGroup(ctx context.Context, tx *sql.Tx, groupID int64, name string) err
 		return e
 	}
 	if !testerOwnsGroup(now) {
-		return fmt.Errorf("테스트 빌드(%s)는 %s 로 시작하는 그룹만 관리합니다: %s", TesterPrefix, testerGroupPrefix(), now)
+		return fmt.Errorf("%s: %s", testerGroupRule(), now)
 	}
 	if now != name {
 		return fmt.Errorf("그룹 이름이 불러온 뒤 바뀌었습니다(%s → %s) — 다시 불러오세요. 아무것도 바꾸지 않았습니다", name, now)
@@ -1444,7 +1454,7 @@ func (s *Service) applyLocked(ctx context.Context, previewID string) (*manageRec
 	}
 	if e = tx.Commit(); e != nil {
 		delete(s.manage.sessions, m.Group.ID)
-		return nil, m.Config, res, fmt.Errorf("저장(커밋) 결과를 알 수 없습니다. 알림은 보내지 않았습니다 — 「끝나지 않은 작업」의 「알림 다시 보내기」가 저장 여부부터 확인합니다: %w", e)
+		return nil, m.Config, res, fmt.Errorf("저장(커밋) 결과를 알 수 없습니다. 알림은 보내지 않았습니다 — 「마무리 안 된 작업」의 「수집 서버에 다시 알리기」가 저장 여부부터 확인합니다: %w", e)
 	}
 	// Names changed: the loaded snapshot is stale, the screen loads the group again.
 	delete(s.manage.sessions, m.Group.ID)
@@ -1494,11 +1504,11 @@ func (s *Service) learnManaged(m *manageSession, points []PointChange, id string
 func (s *Service) finishRename(ctx context.Context, cfg Config, rec *manageRecord) ManageResult {
 	watch := s.watchCollection(ctx, cfg, rec.Watch)
 	defer watch.close()
-	s.progress("2/3 알림 %d건 보내는 중…", len(rec.Msgs)-rec.Sent)
+	s.progress("2/3 수집 서버에 변경 알리는 중(%d건)…", len(rec.Msgs)-rec.Sent)
 	e := publish(ctx, cfg, rec.Msgs, &rec.Sent)
 	if e != nil {
 		rec.Rename.Pending = true
-		rec.Rename.Message = fmt.Sprintf("DB에는 저장됐지만 알림 %d/%d건만 보냈습니다 — 「알림 다시 보내기」를 누르세요(DB는 다시 바꾸지 않음, 앱을 다시 켜도 「끝나지 않은 작업」에 남음): %v", rec.Sent, len(rec.Msgs), e)
+		rec.Rename.Message = fmt.Sprintf("DB에는 저장됐지만 알림 %d/%d건만 보냈습니다 — 「수집 서버에 다시 알리기」를 누르세요(DB는 다시 바꾸지 않음, 앱을 다시 켜도 「마무리 안 된 작업」에 남음): %v", rec.Sent, len(rec.Msgs), e)
 		s.recordNote(rec)
 		return rec.Rename
 	}
@@ -1549,7 +1559,7 @@ func summarizeManaged(r *ManageResult, ids []int64, seen map[int64]int, watchErr
 	case len(r.Missing) == 0:
 		r.Message = fmt.Sprintf("%s. 모두 값은 있지만 %d개는 확인 시간 안에 새 값이 안 들어왔습니다(주기가 길거나 원본 키가 멈춤).", saved, partial)
 	default:
-		r.Message = fmt.Sprintf("%s. 하지만 %d/%d개만 값이 갱신됩니다. 값이 없는 체크포인트: %s — Active Collector 로그를 확인하세요.", saved, r.Collected, len(ids), idList(r.Missing, 20))
+		r.Message = fmt.Sprintf("%s. 하지만 %d/%d개만 값이 갱신됩니다. 값이 없는 체크포인트: %s — 수집 서버 로그를 확인하세요.\n자세히: Active Collector 의 collector.log 에서 Received/Done 과 「Cannot find CheckpointCdo」 를 확인하세요.", saved, r.Collected, len(ids), idList(r.Missing, 20))
 	}
 	if watchErr != nil {
 		r.Message += " (확인 도중 Redis 오류: " + watchErr.Error() + ")"

@@ -2855,6 +2855,28 @@ export namespace statsreg {
 	
 	
 	
+	export class RegistrationRecord {
+	    id: string;
+	    groupName: string;
+	    at: string;
+	    db: string;
+	    stage: string;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RegistrationRecord(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.groupName = source["groupName"];
+	        this.at = source["at"];
+	        this.db = source["db"];
+	        this.stage = source["stage"];
+	        this.message = source["message"];
+	    }
+	}
 	export class Result {
 	    id: string;
 	    groupId: number;

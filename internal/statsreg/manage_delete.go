@@ -223,7 +223,7 @@ func buildDelete(ctx context.Context, q queryer, groupID, driverID int64, req De
 		return deletePlan{}, DeletePreview{}, fmt.Errorf("그룹(ID %d)을 확인할 수 없습니다 — 다시 조회하세요: %w", groupID, e)
 	}
 	if !testerOwnsGroup(name) {
-		return deletePlan{}, DeletePreview{}, fmt.Errorf("테스트 빌드(%s)는 %s 로 시작하는 그룹만 지웁니다: %s", TesterPrefix, testerGroupPrefix(), name)
+		return deletePlan{}, DeletePreview{}, fmt.Errorf("%s: %s", testerGroupRule(), name)
 	}
 	plan := deletePlan{whole: req.WholeGroup, groupID: groupID, groupName: name, driverID: driverID, devices: []ManagedDevice{}}
 	prev := DeletePreview{WholeGroup: req.WholeGroup, GroupName: name, Devices: []ManagedDevice{}, Blockers: []string{}, Warnings: []string{}, Points: []DeletePoint{}}
@@ -317,7 +317,7 @@ func deleteBlockers(ctx context.Context, q queryer, plan *deletePlan, prev *Dele
 	if refs, e := conditionRefs(ctx, q, plan.checkpoints); e != nil {
 		prev.Warnings = append(prev.Warnings, "체크포인트를 번호로 가리키는 지정 규칙 조건을 확인하지 못했습니다: "+e.Error())
 	} else if len(refs) > 0 {
-		prev.Blockers = append(prev.Blockers, fmt.Sprintf("지울 체크포인트를 번호로 가리키는 체크포인트 지정 규칙 조건이 있습니다: %s. 체크포인트가 지워지면 Collector가 이 조건에서 오류를 내 그 규칙을 쓰는 이벤트 정책 전체가 멈출 수 있으므로 막습니다 — admin 에서 조건을 먼저 지우세요.", strings.Join(refs, ", ")))
+		prev.Blockers = append(prev.Blockers, fmt.Sprintf("지울 체크포인트를 번호로 가리키는 체크포인트 지정 규칙 조건이 있습니다: %s. 체크포인트가 지워지면 수집 서버가 이 조건에서 오류를 내 그 규칙을 쓰는 이벤트 정책 전체가 멈출 수 있으므로 막습니다 — admin 에서 조건을 먼저 지우세요.", strings.Join(refs, ", ")))
 	}
 	if len(plan.devices) > 0 && !lock {
 		var open int
@@ -553,7 +553,7 @@ func (s *Service) deleteLocked(ctx context.Context, previewID, confirm string) (
 	}
 	if e = tx.Commit(); e != nil {
 		delete(s.manage.sessions, m.Group.ID)
-		return nil, m.Config, res, fmt.Errorf("삭제(커밋) 결과를 알 수 없습니다. 알림은 보내지 않았습니다 — 「끝나지 않은 작업」의 「알림 다시 보내기」가 저장 여부부터 확인합니다: %w", e)
+		return nil, m.Config, res, fmt.Errorf("삭제(커밋) 결과를 알 수 없습니다. 알림은 보내지 않았습니다 — 「마무리 안 된 작업」의 「수집 서버에 다시 알리기」가 저장 여부부터 확인합니다: %w", e)
 	}
 	delete(s.manage.sessions, m.Group.ID)
 	rec.Committed, rec.Delete.Committed = true, true
@@ -567,10 +567,10 @@ const deleteSettle = 10 * time.Second
 // devices, deletes their checkpoint:<id> keys on the Redis master and checks
 // the result — without s.mu.
 func (s *Service) finishDelete(ctx context.Context, cfg Config, rec *manageRecord) DeleteResult {
-	s.progress("2/4 알림 %d건 보내는 중…", len(rec.Msgs)-rec.Sent)
+	s.progress("2/4 수집 서버에 변경 알리는 중(%d건)…", len(rec.Msgs)-rec.Sent)
 	if e := publish(ctx, cfg, rec.Msgs, &rec.Sent); e != nil {
 		rec.Delete.Pending = true
-		rec.Delete.Message = fmt.Sprintf("DB에서는 지웠지만 알림 %d/%d건만 보냈습니다 — 「알림 다시 보내기」를 누르세요(DB는 다시 바꾸지 않음, 앱을 다시 켜도 「끝나지 않은 작업」에 남음): %v", rec.Sent, len(rec.Msgs), e)
+		rec.Delete.Message = fmt.Sprintf("DB에서는 지웠지만 알림 %d/%d건만 보냈습니다 — 「수집 서버에 다시 알리기」를 누르세요(DB는 다시 바꾸지 않음, 앱을 다시 켜도 「마무리 안 된 작업」에 남음): %v", rec.Sent, len(rec.Msgs), e)
 		s.recordNote(rec)
 		return rec.Delete
 	}
@@ -582,10 +582,10 @@ func (s *Service) finishDelete(ctx context.Context, cfg Config, rec *manageRecor
 		wait = deleteSettle
 	}
 	for left := wait; left > 0; left -= time.Second {
-		s.progress("3/4 Collector가 장비를 멈출 시간을 줍니다 — %d초", int(left.Seconds()))
+		s.progress("3/4 수집 서버가 이 장비 수집을 멈추도록 기다리는 중 — %d초", int(left.Seconds()))
 		select {
 		case <-ctx.Done():
-			rec.Delete.Message = "DB 삭제·알림까지 했고, 수집값 키를 지우기 전에 중단됐습니다 — 「Redis 정리 다시」를 누르세요."
+			rec.Delete.Message = "DB 삭제·알림까지 했고, Redis 에 남은 최근값을 지우기 전에 멈췄습니다 — 「Redis 최근값 다시 지우기」를 누르세요."
 			s.recordNote(rec)
 			return rec.Delete
 		case <-time.After(time.Second):
@@ -612,7 +612,7 @@ func (s *Service) cleanRecordKeys(ctx context.Context, cfg Config, rec *manageRe
 	r, e := openRedisMaster(ctx, cfg)
 	if e == nil {
 		clean = cleanKeys(ctx, redisKeys{r}, keys, window, pollEvery, func(left time.Duration) {
-			s.progress("4/4 수집값 키 %d개를 지우고 다시 생기는지 확인 중 (%d초 남음)", len(keys), int(left.Seconds()+0.99))
+			s.progress("4/4 Redis 에 남은 최근값 %d개를 지우고 다시 생기는지 확인 중 (%d초 남음)", len(keys), int(left.Seconds()+0.99))
 		})
 		r.Close()
 	} else {
@@ -627,7 +627,7 @@ func (s *Service) cleanRecordKeys(ctx context.Context, cfg Config, rec *manageRe
 	}
 	summarizeDelete(&rec.Delete, clean, dbErr)
 	if clean.err != nil || len(clean.left) > 0 {
-		rec.Delete.Message += " 「Redis 정리 다시」로 다시 지울 수 있습니다."
+		rec.Delete.Message += " 「Redis 최근값 다시 지우기」로 다시 지울 수 있습니다."
 	}
 	rec.Done = clean.err == nil && len(clean.left) == 0
 	s.recordNote(rec)
@@ -663,7 +663,7 @@ func summarizeDelete(r *DeleteResult, c cleanup, dbErr error) {
 	if r.GroupDeleted {
 		what += " (그룹 포함)"
 	}
-	parts := []string{what}
+	parts, detail := []string{what}, ""
 	switch {
 	case dbErr != nil:
 		parts = append(parts, "DB 확인 실패: "+dbErr.Error())
@@ -674,17 +674,22 @@ func summarizeDelete(r *DeleteResult, c cleanup, dbErr error) {
 	}
 	switch {
 	case c.err != nil:
-		parts = append(parts, fmt.Sprintf("수집값 키(checkpoint:<id>) %d개를 다 지우지 못했습니다: %v", len(c.left), c.err))
+		parts = append(parts, fmt.Sprintf("Redis 에 남은 최근값 %d개를 다 지우지 못했습니다", len(c.left)))
+		detail = fmt.Sprintf("checkpoint:<번호> 키 — %v", c.err)
 	case len(c.left) > 0:
-		parts = append(parts, fmt.Sprintf("지운 수집값 키 %d개가 다시 생겼습니다(%s) — Collector가 아직 이 장비를 수집하는지 확인하세요", len(c.left), strings.Join(firstN(c.left, 10), ", ")))
+		parts = append(parts, fmt.Sprintf("지운 Redis 최근값 %d개가 다시 생겼습니다 — 수집 서버가 아직 이 장비를 수집하는지 확인하세요", len(c.left)))
+		detail = strings.Join(firstN(c.left, 10), ", ")
 	default:
-		parts = append(parts, fmt.Sprintf("수집값 키 %d개 삭제, 다시 생기지 않음", r.KeysDeleted))
+		parts = append(parts, fmt.Sprintf("Redis 에 남은 최근값 %d개 삭제, 다시 생기지 않음", r.KeysDeleted))
 		if c.again {
 			parts[len(parts)-1] += "(한 번 다시 생긴 키를 한 번 더 지웠음)"
 		}
 	}
 	r.Verified = dbErr == nil && r.DBLeft == 0 && c.err == nil && len(c.left) == 0
 	r.Message = strings.Join(parts, ". ") + "."
+	if detail != "" {
+		r.Message += "\n자세히: " + detail
+	}
 }
 
 func firstN(v []string, n int) []string {

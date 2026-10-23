@@ -88,3 +88,8 @@ func (a *App) StatsRetry(c statsreg.Config, id string) (statsreg.Result, error) 
 	defer cancel()
 	return a.stats.Retry(ctx, c, id)
 }
+
+// StatsRecentRegistrations lists unfinished registrations, to resume without typing their number.
+func (a *App) StatsRecentRegistrations() ([]statsreg.RegistrationRecord, error) {
+	return a.stats.RecentRegistrations()
+}

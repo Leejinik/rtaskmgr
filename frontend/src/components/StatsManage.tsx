@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { StatsManageLoad, StatsManagePreview, StatsManageApply, StatsManageResend, StatsManageDeletePreview, StatsManageDelete, StatsManagePending, StatsManageRedisRetry, StatsManageOrphans, StatsManageOrphanDeletePreview } from "../../wailsjs/go/main/App";
 import { statsreg } from "../../wailsjs/go/models";
 import { useEsc } from "../useEsc";
+import StatsMessage from "./statsMessage";
 
 // 「기존 등록 관리」: one row per key shape (the server part of the key shown as
 // {서버}), one column per device. A new name typed on a row goes to every
@@ -49,8 +50,8 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
   const refreshPending = () => StatsManagePending().then(v => setPending(v || [])).catch(() => {});
   useEffect(() => { refreshPending(); }, [result, delResult]);
   function showOutcome(o: statsreg.ManageOutcome) { if (o.kind === "delete") { setDelResult(o.delete); setResult(null); } else { setResult(o.rename); setDelResult(null); } }
-  const resend = (id: string) => work("알림 다시 보내는 중…", async () => showOutcome(await StatsManageResend(plan.id, id)));
-  const redisRetry = (id: string) => work("Redis 수집값 키 다시 지우는 중…", async () => { setResult(null); setDelResult(await StatsManageRedisRetry(plan.id, id)); });
+  const resend = (id: string) => work("수집 서버에 다시 알리는 중…", async () => showOutcome(await StatsManageResend(plan.id, id)));
+  const redisRetry = (id: string) => work("Redis 에 남은 최근값 다시 지우는 중…", async () => { setResult(null); setDelResult(await StatsManageRedisRetry(plan.id, id)); });
   const dialog = !!preview || !!delPreview;
   useEffect(() => { onDialog(dialog); }, [dialog]);
   function cancelDelete() { setDelPreview(null); setConfirm(""); setNote("취소됨 — 아무것도 지우지 않았습니다."); }
@@ -85,25 +86,25 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
 
   const resultBox = <>
     {result && <div className={result.verified ? "stats-success stats-result" : "stats-warning stats-result"} role="status">
-      <p><b>{result.committed ? "적용 결과" : "적용하지 않음"}</b> — {result.message}</p>
+      <div><b>{result.committed ? "적용 결과" : "적용하지 않음"}</b> — <StatsMessage text={result.message} /></div>
       {result.committed && result.watched > 0 && <p>수집 확인: {result.collected}/{result.watched}개{result.missing?.length ? ` · 값이 안 들어온 체크포인트 ${result.missing.length}개` : ""}</p>}
       {result.conflicts?.length > 0 && <details open><summary>불러온 뒤 다른 곳(admin 등)에서 바뀌어 건너뛴 {result.conflicts.length}개 — 덮어쓰지 않았습니다</summary><ul>{result.conflicts.map((c, i) => <li key={i}>{c}</li>)}</ul></details>}
-      {result.pending && <button className="toolbtn" disabled={!!busy} onClick={() => resend(result.id)}>알림 다시 보내기 (DB는 다시 바꾸지 않음)</button>}
+      {result.pending && <button className="toolbtn" disabled={!!busy} onClick={() => resend(result.id)}>수집 서버에 다시 알리기 (DB는 다시 바꾸지 않음)</button>}
     </div>}
     {note && <p className="stats-muted stats-result" role="status">{note}</p>}
     {delResult && <div className={delResult.verified ? "stats-success stats-result" : "stats-warning stats-result"} role="status">
-      <p><b>삭제 결과</b> — {delResult.message}</p>
-      {delResult.pending && <button className="toolbtn" disabled={!!busy} onClick={() => resend(delResult.id)}>알림 다시 보내기 (DB는 다시 바꾸지 않음)</button>}
-      {delResult.committed && delResult.notified && !delResult.verified && <button className="toolbtn" disabled={!!busy} onClick={() => redisRetry(delResult.id)}>Redis 정리 다시 (지운 체크포인트의 수집값 키)</button>}
+      <div><b>삭제 결과</b> — <StatsMessage text={delResult.message} /></div>
+      {delResult.pending && <button className="toolbtn" disabled={!!busy} onClick={() => resend(delResult.id)}>수집 서버에 다시 알리기 (DB는 다시 바꾸지 않음)</button>}
+      {delResult.committed && delResult.notified && !delResult.verified && <button className="toolbtn" disabled={!!busy} onClick={() => redisRetry(delResult.id)}>Redis 최근값 다시 지우기 (지운 체크포인트 것)</button>}
     </div>}
   </>;
 
   return <div className="stats-manage">
     {resultBox}
-    {pending.length > 0 && <details className="stats-recovery stats-pending" open><summary>끝나지 않은 작업 {pending.length}개 — 알림을 다 못 보냈거나 Redis 수집값 키가 남은 이름 변경·삭제</summary>
-      <p className="stats-muted">DB에는 이미 저장된 작업입니다(「저장 여부 모름」은 다시 보낼 때 DB부터 확인). 이 PC의 ~/.rtaskmgr/stats-registration/manage-*.json 에 기록돼 있어 앱을 다시 켜도 남습니다. 그 작업을 한 때와 같은 MariaDB·Kafka로 연결 확인한 상태에서 누르세요.</p>
-      <ul>{pending.map(p => <li key={p.id}>{p.at.slice(0, 16).replace("T", " ")} · {p.kind === "delete" ? "삭제" : "이름·주기 변경"} · 그룹 {p.groupName} · {p.committed ? `알림 ${p.sent}/${p.total}건 보냄` : "저장 여부 모름"}{p.keysLeft ? ` · 남은 수집값 키 ${p.keysLeft}개` : ""}{p.message && <small>{p.message}</small>}
-        {(!p.committed || p.sent < p.total) && <button className="linkbtn" disabled={!!busy} onClick={() => resend(p.id)}>알림 다시 보내기</button>}{p.kind === "delete" && p.committed && p.sent >= p.total && <> <button className="linkbtn" disabled={!!busy} onClick={() => redisRetry(p.id)}>Redis 정리 다시</button></>}</li>)}</ul>
+    {pending.length > 0 && <details className="stats-recovery stats-pending" open><summary>마무리 안 된 작업 {pending.length}개 — DB에는 저장됐지만 수집 서버에 아직 알리지 못했거나, 지운 장비의 Redis 최근값이 남은 이름 변경·삭제</summary>
+      <p className="stats-muted">언제 쓰나: 적용·삭제 결과에 「알리지 못했습니다」·「다 지우지 못했습니다」가 나왔을 때, 또는 그 도중에 앱이 꺼졌을 때. 그 작업을 한 때와 같은 MariaDB·Kafka로 연결 확인한 상태에서 누르세요. 「저장 여부 모름」은 누르면 DB부터 확인합니다. 앱을 다시 켜도 이 목록은 남습니다.</p>
+      <ul>{pending.map(p => <li key={p.id}>{p.at.slice(0, 16).replace("T", " ")} · {p.kind === "delete" ? "삭제" : "이름·주기 변경"} · 그룹 {p.groupName} · {p.committed ? `수집 서버에 알림 ${p.sent}/${p.total}건 보냄` : "저장 여부 모름"}{p.keysLeft ? ` · Redis 에 남은 최근값 ${p.keysLeft}개` : ""}{p.message && <div className="stats-muted"><StatsMessage text={p.message} /></div>}
+        {(!p.committed || p.sent < p.total) && <button className="linkbtn" disabled={!!busy} onClick={() => resend(p.id)}>수집 서버에 다시 알리기</button>}{p.kind === "delete" && p.committed && p.sent >= p.total && <> <button className="linkbtn" disabled={!!busy} onClick={() => redisRetry(p.id)}>Redis 최근값 다시 지우기</button></>}</li>)}</ul>
     </details>}
     {orphans && orphans.length > 0 && <details className="stats-recovery stats-orphans" open><summary>그룹에 없는 장비 {orphans.length}대 — admin 에서 그룹을 지우면 장비는 그룹 밖에 남아 계속 수집됩니다</summary>
       <p className="stats-muted">이 앱이 등록한 장비(체크포인트가 모두 리소스 수집 키)만 여기서 지울 수 있습니다. 나머지는 🔒 이유와 admin 에서 찾는 곳을 적어 두었습니다.</p>
@@ -113,9 +114,9 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
     {(plan.existing || []).length > 0 && <div className="stats-toolbar">
       <label className="stats-inline">관리할 그룹<select value={groupId} disabled={!!busy} onChange={e => { const id = Number(e.target.value); setGroupId(id); setResult(null); setDelResult(null); work("그룹 불러오는 중…", () => load(id)); }}>{(plan.existing || []).map(g => <option key={g.groupId} value={g.groupId}>{g.name} (ID {g.groupId}) — 장비 {g.devices.length}대 · 체크포인트 {g.points}개</option>)}</select></label>
       <button className="toolbtn" disabled={!!busy || !groupId} onClick={() => { setResult(null); setDelResult(null); work("그룹 불러오는 중…", () => load(groupId)); }}>{group ? "다시 불러오기" : "불러오기"}</button>
-      {group && <span>장비 {devices.length}대 · 키 모양 {group.rows.length}줄 · 체크포인트 {group.checkpoints}개{group.rawNames ? ` · 이름이 키 그대로 ${group.rawNames}개` : ""}</span>}
+      {group && <span>장비 {devices.length}대 · 키 묶음 {group.rows.length}줄 · 체크포인트 {group.checkpoints}개{group.rawNames ? ` · 이름이 키 그대로 ${group.rawNames}개` : ""}</span>}
     </div>}
-    {!group && (plan.existing || []).length > 0 && <p className="stats-muted">그룹을 고르고 「불러오기」를 누르면 그 그룹의 장비와 체크포인트를 키 모양별로 보여 줍니다. 이름·주기 수정, 장비 이름 수정, 장비·그룹 삭제를 할 수 있습니다.</p>}
+    {!group && (plan.existing || []).length > 0 && <p className="stats-muted">그룹을 고르고 「불러오기」를 누르면 그 그룹의 장비와 체크포인트를 서버만 다른 키끼리 묶어 한 줄로 보여 줍니다. 이름·주기 수정, 장비 이름 수정, 장비·그룹 삭제를 할 수 있습니다.</p>}
     {group && <>
       {group.warnings.map((w, i) => <p className="stats-warning" key={i}>{w}</p>)}
       <fieldset className="stats-settings" disabled={!!busy}><legend>장비 이름 (살아 있는 다른 장비와 같은 이름은 막습니다)</legend>
@@ -133,7 +134,7 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
         <p>바꾼 포인트 이름·주기는 이 PC가 기억해 두었다가, 다음에 새로 등록하거나 새 키를 추가할 때 같은 종류의 키에 미리 채웁니다. 장비 이름은 기억하지 않습니다.</p>
       </details>
       <div className="stats-table-wrap"><table className="stats-table stats-manage-table">
-        <thead><tr><th></th><th>키 모양 / 지금 이름</th>{devices.map(d => <th key={d.deviceId} title={`장비 ID ${d.deviceId}`}>{d.name}{gone.includes(d.deviceId) && <small className="stats-badge">삭제됨, 반영 대기</small>}</th>)}<th className="stats-interval-col">주기 ms</th><th>새 이름</th></tr></thead>
+        <thead><tr><th></th><th title="서버만 다르고 나머지가 같은 키를 한 줄로 묶었습니다. {서버별} 자리에 서버마다 다른 값이 들어 있습니다">키 묶음 / 지금 이름</th>{devices.map(d => <th key={d.deviceId} title={`장비 ID ${d.deviceId}`}>{d.name}{gone.includes(d.deviceId) && <small className="stats-badge">삭제됨, 반영 대기</small>}</th>)}<th className="stats-interval-col">주기 ms</th><th>새 이름</th></tr></thead>
         <tbody>{listed.map(r => {
           const cur = rowCurrentName(r);
           const ivs = rowIntervals(r);
@@ -152,7 +153,7 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
       <div className="stats-toolbar"><button className="toolbtn primary" disabled={!!busy || (!editedRows && !editedDevices)} onClick={() => work("바뀔 내용 확인 중…", async () => { setResult(null); setDelResult(null); setPreview(await StatsManagePreview(edit())); })}>바뀔 내용 미리보기 (줄 {editedRows}개{editedDevices ? ` · 장비 ${editedDevices}개` : ""})</button><span className="stats-muted">미리보기에서 「적용」을 눌러야 DB에 씁니다.</span></div>
 
       <details className="stats-danger"><summary>장비 또는 그룹 삭제</summary>
-        <p className="stats-muted">장비를 지우면 그 장비의 체크포인트도 모두 지워집니다(admin 의 장비 삭제와 같음). 체크포인트 하나씩 지우기는 없습니다 — 이 빌드의 Collector는 혼자 지운 체크포인트를 재기동 전까지 초당 10번씩 경고로 남기기 때문입니다. 그룹 삭제는 그 안의 장비를 먼저 모두 지운 뒤 그룹을 지웁니다(admin 은 장비를 남깁니다). 지운 체크포인트의 Redis 수집값 키(checkpoint:번호)도 이 앱이 지웁니다.</p>
+        <div className="stats-muted">장비를 지우면 그 장비의 체크포인트도 모두 지워집니다(admin 의 장비 삭제와 같음). 체크포인트 하나씩 지우기는 없습니다 — 지금 수집 서버는 하나만 지운 체크포인트를 재시작 전까지 초당 10번씩 경고로 남기기 때문입니다. 그룹 삭제는 그 안의 장비를 먼저 모두 지운 뒤 그룹을 지웁니다(admin 은 장비를 남깁니다). 지운 체크포인트가 Redis 에 남긴 최근값도 이 앱이 지웁니다. <details className="stats-more"><summary>자세히</summary><code>Redis 키 checkpoint:&lt;체크포인트 번호&gt; — 이 빌드(trunk #987)의 Collector 는 장비를 지워도 이 키를 남김(TTL 없음)</code></details></div>
         <div className="stats-toolbar"><label className="stats-inline">지울 대상<select value={target} disabled={!!busy} onChange={e => setTarget(e.target.value)}><option value="">고르세요</option>{devices.map(d => <option key={d.deviceId} value={String(d.deviceId)} disabled={!!d.locked || gone.includes(d.deviceId)}>장비 {d.name} (체크포인트 {d.checkpoints}개){d.locked ? " — 🔒 다른 그룹에도 있거나 바꿀 수 없는 장비" : ""}</option>)}<option value="group">그룹 「{group.name}」 전체 (장비 {devices.length}대)</option></select></label>
           <button className="toolbtn" disabled={!!busy || !target} onClick={() => work("지울 내용 확인 중…", async () => { setResult(null); setDelResult(null); setNote(""); setConfirm(""); setDelPreview(await StatsManageDeletePreview(new statsreg.DeleteRequest({ manageId: group.id, deviceId: target === "group" ? 0 : Number(target), wholeGroup: target === "group" }))); })}>지울 내용 미리보기</button></div>
       </details>
@@ -160,7 +161,7 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
 
     {preview && <div className="scrim stats-inner-scrim"><div className="stats-inner-dialog" role="dialog" aria-modal="true" aria-labelledby="stats-preview-title">
       <h3 id="stats-preview-title">바뀔 내용</h3>
-      <p>체크포인트 {preview.points.length}개(이름 {preview.renamed}개 · 주기 {preview.intervals}개) · 장비 이름 {preview.devices.length}개 · 영향 받는 장비 {preview.touched}대. 적용하면 한 번에 저장하고, Collector에 알림 {(preview.points.length ? 1 : 0) + 1 + (preview.devices.length ? 1 : 0)}건을 보낸 뒤 값이 계속 들어오는지 확인합니다.</p>
+      <p>체크포인트 {preview.points.length}개(이름 {preview.renamed}개 · 주기 {preview.intervals}개) · 장비 이름 {preview.devices.length}개 · 영향 받는 장비 {preview.touched}대. 적용하면 한 번에 저장하고, 수집 서버에 변경 알림 {(preview.points.length ? 1 : 0) + 1 + (preview.devices.length ? 1 : 0)}건을 보낸 뒤 값이 계속 들어오는지 확인합니다.</p>
       <p className="stats-muted">admin 화면에서 이 장비·포인트의 편집 창을 열어 둔 사람이 있으면 먼저 닫게 해 주세요. 열린 창에서 저장하면 여기서 바꾼 이름이 예전 이름으로 돌아갑니다.</p>
       {preview.errors?.map((e, i) => <p className="stats-error" key={"e" + i}>⛔ {e}</p>)}
       {preview.warnings?.map((w, i) => <p className="stats-warning" key={"w" + i}>⚠ {w}</p>)}
@@ -173,7 +174,7 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
 
     {delPreview && <div className="scrim stats-inner-scrim"><div className="stats-inner-dialog stats-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="stats-delete-title">
       <h3 id="stats-delete-title">{delPreview.wholeGroup ? `그룹 「${delPreview.groupName}」 삭제` : `장비 「${delPreview.confirm}」 삭제`}</h3>
-      <p>지워지는 것: <b>장비 {delPreview.devices.length}대 · 체크포인트 {delPreview.checkpoints}개</b>{delPreview.wholeGroup ? " · 그룹 1개" : ""} · Redis 수집값 키 최대 {delPreview.checkpoints}개</p>
+      <p>지워지는 것: <b>장비 {delPreview.devices.length}대 · 체크포인트 {delPreview.checkpoints}개</b>{delPreview.wholeGroup ? " · 그룹 1개" : ""} · Redis 에 남은 최근값 최대 {delPreview.checkpoints}개</p>
       <ul>{delPreview.devices.map(d => { const ps = (delPreview.points || []).filter(p => p.deviceId === d.deviceId); return <li key={d.deviceId}>{d.name} (ID {d.deviceId}) — 체크포인트 {d.checkpoints}개{ps.length > 0 && <details className="stats-delete-names"><summary>지워질 체크포인트 이름 보기</summary><ol>{ps.map(p => <li key={p.checkpointId}>{p.name} <small className="stats-muted">{p.key}</small></li>)}</ol></details>}</li>; })}</ul>
       <p className="stats-error"><b>되돌릴 수 없습니다.</b> admin 에도 지운 장비를 되살리는 화면이 없습니다.</p>
       {delPreview.blockers?.map((b, i) => <p className="stats-error" key={"b" + i}>⛔ {b}</p>)}

@@ -369,12 +369,12 @@ func (s *Service) register(ctx context.Context, sel Selection, rollbackOnly bool
 		rec.DeviceMessages = deviceNotifications(res)
 	}
 	if e = s.saveReceipt(rec); e != nil {
-		return res, fmt.Errorf("복구 기록 저장 실패 — 등록 취소: %w", e)
+		return res, fmt.Errorf("등록 기록 저장 실패 — 등록 취소: %w", e)
 	}
 	delete(s.sessions, sel.PlanID)
 	s.progress("1/4 새 장비 %d개·인터페이스 저장 중…", len(res.NewDeviceIDs))
 	if e = tx.Commit(); e != nil {
-		rec.Result.Message = "장비 저장(커밋) 결과를 확인해야 합니다. 「이어서 진행」이 저장 여부부터 확인합니다: " + e.Error()
+		rec.Result.Message = "장비 저장(커밋) 결과를 확인해야 합니다. 「남은 단계 마저 하기」이 저장 여부부터 확인합니다: " + e.Error()
 		return rec.Result, nil
 	}
 	rec.Result.Stage = stageDevices
@@ -688,11 +688,11 @@ func (s *Service) proceed(ctx context.Context, c Config, db *sql.DB, rec receipt
 			_ = s.saveReceipt(rec)
 		}
 		if len(rec.DeviceMessages) > 0 && !s.settle(ctx, rec.DevicesNotifiedAt) {
-			rec.Result.Message = "장비까지 등록됨. Collector 반영 대기 중 중단됐습니다 — 「이어서 진행」으로 체크포인트 등록을 계속하세요"
+			rec.Result.Message = "장비까지 등록됨. 수집 서버가 새 장비를 알아차리도록 기다리는 중에 멈췄습니다 — 「남은 단계 마저 하기」으로 체크포인트 등록을 계속하세요"
 			return rec.Result
 		}
 		if e := s.commitCheckpoints(ctx, db, &rec); e != nil {
-			rec.Result.Message = "장비까지 등록됨. 체크포인트 등록 실패 — 「이어서 진행」으로 다시 시도하세요: " + e.Error()
+			rec.Result.Message = "장비까지 등록됨. 체크포인트 등록 실패 — 「남은 단계 마저 하기」으로 다시 시도하세요: " + e.Error()
 			return rec.Result
 		}
 	}
@@ -718,18 +718,18 @@ func (s *Service) send(ctx context.Context, c Config, rec *receipt, msgs []json.
 	}
 	w, done, e := pipelineWriter(c)
 	if e != nil {
-		rec.Result.Message = fmt.Sprintf("%s 전송 준비 실패 — 「이어서 진행」으로 재시도하세요: %v", what, e)
+		rec.Result.Message = fmt.Sprintf("%s 전송 준비 실패 — 「남은 단계 마저 하기」으로 재시도하세요: %v", what, e)
 		return false
 	}
 	defer done()
 	for *sent < len(msgs) {
 		if e = w.WriteMessages(ctx, kafka.Message{Key: []byte(pipelineKey), Value: msgs[*sent]}); e != nil {
-			rec.Result.Message = fmt.Sprintf("%s 전송 실패 — 「이어서 진행」으로 재시도하세요(DB 재등록 없음): %v", what, e)
+			rec.Result.Message = fmt.Sprintf("%s 전송 실패 — 「남은 단계 마저 하기」으로 재시도하세요(DB 재등록 없음): %v", what, e)
 			return false
 		}
 		*sent++
 		if e = s.saveReceipt(*rec); e != nil {
-			rec.Result.Message = fmt.Sprintf("%s 복구 기록 저장 실패: %v", what, e)
+			rec.Result.Message = fmt.Sprintf("%s 등록 기록 저장 실패: %v", what, e)
 			return false
 		}
 	}
@@ -767,7 +767,7 @@ func (s *Service) settle(ctx context.Context, since time.Time) bool {
 		if left <= 0 {
 			return true
 		}
-		s.progress("2/4 Collector 반영 대기 %d초 — 빈 장비의 DEVICE_ADDED를 먼저 처리하게 합니다", int(left.Seconds()+0.99))
+		s.progress("2/4 수집 서버가 새 장비를 알아차리도록 기다리는 중 — %d초 (체크포인트를 넣기 전에 필요)", int(left.Seconds()+0.99))
 		select {
 		case <-ctx.Done():
 			return false
@@ -866,10 +866,10 @@ func (s *Service) commitCheckpoints(ctx context.Context, db *sql.DB, rec *receip
 		rec.PointMessages = pointNotifications(rec.Result, from)
 		rec.PointSent = 0
 		if e = s.saveReceipt(*rec); e != nil {
-			return fmt.Errorf("복구 기록 저장 실패 — 체크포인트 등록 취소: %w", e)
+			return fmt.Errorf("등록 기록 저장 실패 — 체크포인트 등록 취소: %w", e)
 		}
 		if e = tx.Commit(); e != nil {
-			return fmt.Errorf("커밋 결과 불확실 — 「이어서 진행」이 저장 여부를 먼저 확인합니다: %w", e)
+			return fmt.Errorf("커밋 결과 불확실 — 「남은 단계 마저 하기」이 저장 여부를 먼저 확인합니다: %w", e)
 		}
 		rec.Result.CheckpointIDs, rec.Result.MovedIDs = ids, moved
 	}
@@ -921,7 +921,7 @@ func pointNotifications(r Result, from []int64) []json.RawMessage {
 
 func (s *Service) receiptPath(id string) (string, error) {
 	if _, e := uuid.Parse(id); e != nil {
-		return "", fmt.Errorf("잘못된 이어서 진행 번호")
+		return "", fmt.Errorf("잘못된 등록 기록 번호")
 	}
 	dir := s.Directory
 	if dir == "" {

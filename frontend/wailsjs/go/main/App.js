@@ -374,6 +374,10 @@ export function StatsPlacementHints(arg1, arg2) {
   return window['go']['main']['App']['StatsPlacementHints'](arg1, arg2);
 }
 
+export function StatsRecentRegistrations() {
+  return window['go']['main']['App']['StatsRecentRegistrations']();
+}
+
 export function StatsRegister(arg1) {
   return window['go']['main']['App']['StatsRegister'](arg1);
 }
