@@ -206,7 +206,7 @@ export function StatsSetClusterConnection(arg1:string,arg2:statsreg.SavedConnect
 
 export function StatsTesterPrefix():Promise<string>;
 
-export function StatsValidate(arg1:statsreg.Selection):Promise<void>;
+export function StatsValidate(arg1:statsreg.Selection):Promise<Array<statsreg.ResolvedName>>;
 
 export function StopCapture(arg1:string,arg2:string):Promise<monitor.CapMeta>;
 

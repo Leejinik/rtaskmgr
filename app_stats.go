@@ -31,10 +31,13 @@ func (a *App) StatsCancelInspect() {
 		statsInspect.cancel()
 	}
 }
-func (a *App) StatsValidate(s statsreg.Selection) error {
+
+// StatsValidate is 「등록 전 검사」; it returns the names whose placeholders
+// ({서버} …) are filled for their row on registration.
+func (a *App) StatsValidate(s statsreg.Selection) ([]statsreg.ResolvedName, error) {
 	ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
 	defer cancel()
-	return a.stats.Validate(ctx, s)
+	return a.stats.Check(ctx, s)
 }
 
 // Register and Retry include the collector settle wait and the collection check

@@ -42,6 +42,8 @@ type Result struct {
 	Collected int     `json:"collected"`
 	Missing   []int64 `json:"missing"`
 	Message   string  `json:"message"`
+	// Names: names whose placeholders ({서버} …) were filled for their row.
+	Names []ResolvedName `json:"names"`
 }
 type receipt struct {
 	Result    Result
@@ -114,23 +116,35 @@ func checkLocation(ctx context.Context, q queryer, sel Selection) (int64, error)
 }
 
 func (s *Service) Validate(ctx context.Context, sel Selection) error {
+	_, e := s.Check(ctx, sel)
+	return e
+}
+
+// Check is 「등록 전 검사」: Validate, plus the names whose placeholders it filled.
+func (s *Service) Check(ctx context.Context, sel Selection) ([]ResolvedName, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sel = testerSelection(sel)
 	v, e := s.session(sel.PlanID)
 	if e != nil {
-		return e
+		return nil, e
+	}
+	sel, names, e := resolveSelectionNames(sel)
+	if e != nil {
+		return nil, e
 	}
 	if e = validateSelection(v.Plan, sel); e != nil {
-		return e
+		return nil, e
 	}
 	db, e := openDB(ctx, v.Config)
 	if e != nil {
-		return e
+		return nil, e
 	}
 	defer db.Close()
-	_, e = checkLocation(ctx, db, sel)
-	return e
+	if _, e = checkLocation(ctx, db, sel); e != nil {
+		return nil, e
+	}
+	return names, nil
 }
 func insert(ctx context.Context, tx *sql.Tx, query string, args ...any) (int64, error) {
 	r, e := tx.ExecContext(ctx, query, args...)
@@ -268,6 +282,12 @@ func (s *Service) register(ctx context.Context, sel Selection, rollbackOnly bool
 	if e != nil {
 		return Result{}, e
 	}
+	// Placeholders in names are filled per row before anything is checked or
+	// saved, so the receipt, the checkpoints and the remembered names all carry the real name.
+	sel, names, e := resolveSelectionNames(sel)
+	if e != nil {
+		return Result{}, e
+	}
 	if e = validateSelection(v.Plan, sel); e != nil {
 		return Result{}, e
 	}
@@ -331,7 +351,7 @@ func (s *Service) register(ctx context.Context, sel Selection, rollbackOnly bool
 		return Result{}, fmt.Errorf("선택한 키 %d개가 이미 등록돼 있습니다(분석 이후 등록됨) — 다시 조회하세요", n)
 	}
 	moves := movedPoints(sel)
-	res := Result{ID: uuid.NewString(), DeviceIDs: []int64{}, InterfaceIDs: []int64{}, CheckpointIDs: []int64{}, MovedIDs: []int64{}, NewDeviceIDs: []int64{}, Missing: []int64{}}
+	res := Result{Names: names, ID: uuid.NewString(), DeviceIDs: []int64{}, InterfaceIDs: []int64{}, CheckpointIDs: []int64{}, MovedIDs: []int64{}, NewDeviceIDs: []int64{}, Missing: []int64{}}
 	var hosts []string
 	var refs []audRef
 	groupName := sel.GroupName

@@ -2877,6 +2877,24 @@ export namespace statsreg {
 	        this.message = source["message"];
 	    }
 	}
+	export class ResolvedName {
+	    key: string;
+	    host: string;
+	    from: string;
+	    to: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ResolvedName(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.host = source["host"];
+	        this.from = source["from"];
+	        this.to = source["to"];
+	    }
+	}
 	export class Result {
 	    id: string;
 	    groupId: number;
@@ -2893,6 +2911,7 @@ export namespace statsreg {
 	    collected: number;
 	    missing: number[];
 	    message: string;
+	    names: ResolvedName[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Result(source);
@@ -2915,7 +2934,26 @@ export namespace statsreg {
 	        this.collected = source["collected"];
 	        this.missing = source["missing"];
 	        this.message = source["message"];
+	        this.names = this.convertValues(source["names"], ResolvedName);
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	
 	export class SavedConnection {
