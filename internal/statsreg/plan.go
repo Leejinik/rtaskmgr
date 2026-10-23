@@ -77,6 +77,8 @@ type Plan struct {
 	RedisInfo   string          `json:"redisInfo"`
 	// RedisMaster: the master found by ROLE ("" = none: deletes are refused).
 	RedisMaster string `json:"redisMaster"`
+	// Orphans: resource-stats devices in no group (admin's group delete leaves them).
+	Orphans int `json:"orphans"`
 	PatternInfo string          `json:"patternInfo"`
 	Existing    []ExistingGroup `json:"existing"`
 }

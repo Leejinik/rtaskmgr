@@ -2572,6 +2572,24 @@ export namespace statsreg {
 	        this.name = source["name"];
 	    }
 	}
+	export class OrphanDevice {
+	    deviceId: number;
+	    name: string;
+	    checkpoints: number;
+	    locked: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new OrphanDevice(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.deviceId = source["deviceId"];
+	        this.name = source["name"];
+	        this.checkpoints = source["checkpoints"];
+	        this.locked = source["locked"];
+	    }
+	}
 	export class PatternChange {
 	    shape: string;
 	    field: string;
@@ -2728,6 +2746,7 @@ export namespace statsreg {
 	    warnings: string[];
 	    redisInfo: string;
 	    redisMaster: string;
+	    orphans: number;
 	    patternInfo: string;
 	    existing: ExistingGroup[];
 	
@@ -2746,6 +2765,7 @@ export namespace statsreg {
 	        this.warnings = source["warnings"];
 	        this.redisInfo = source["redisInfo"];
 	        this.redisMaster = source["redisMaster"];
+	        this.orphans = source["orphans"];
 	        this.patternInfo = source["patternInfo"];
 	        this.existing = this.convertValues(source["existing"], ExistingGroup);
 	    }

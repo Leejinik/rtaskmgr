@@ -342,6 +342,14 @@ export function StatsManageLoad(arg1, arg2) {
   return window['go']['main']['App']['StatsManageLoad'](arg1, arg2);
 }
 
+export function StatsManageOrphanDeletePreview(arg1, arg2) {
+  return window['go']['main']['App']['StatsManageOrphanDeletePreview'](arg1, arg2);
+}
+
+export function StatsManageOrphans(arg1) {
+  return window['go']['main']['App']['StatsManageOrphans'](arg1);
+}
+
 export function StatsManagePending() {
   return window['go']['main']['App']['StatsManagePending']();
 }

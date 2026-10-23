@@ -178,6 +178,10 @@ export function StatsManageDeletePreview(arg1:statsreg.DeleteRequest):Promise<st
 
 export function StatsManageLoad(arg1:string,arg2:number):Promise<statsreg.ManagedGroup>;
 
+export function StatsManageOrphanDeletePreview(arg1:string,arg2:number):Promise<statsreg.DeletePreview>;
+
+export function StatsManageOrphans(arg1:string):Promise<Array<statsreg.OrphanDevice>>;
+
 export function StatsManagePending():Promise<Array<statsreg.PendingManage>>;
 
 export function StatsManagePreview(arg1:statsreg.ManageEdit):Promise<statsreg.ManagePreview>;

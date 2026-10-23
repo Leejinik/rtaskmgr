@@ -104,8 +104,10 @@ export default function StatsRegistration({ initialHost, cluster, onClose }: { i
     {plan && selection && mode === "" && <div className="stats-update-ask">
       <p><b>무엇을 할까요?</b></p>
       {plan.existing?.length ? <ul>{plan.existing.map(g => <li key={g.groupId}>{g.name} — 장비 {g.devices.length}대 · 체크포인트 {g.points}개</li>)}</ul> : null}
-      <div className="stats-update-buttons"><button className="toolbtn primary" onClick={() => setMode(plan.existing?.length ? "ask" : "new")}>{plan.existing?.length ? "새로 등록 / 새 키 추가" : "새로 등록"}</button><button className="toolbtn" disabled={!plan.existing?.length} onClick={() => { setResult(null); setMode("manage"); }}>기존 등록 관리 (이름·주기 수정, 삭제)</button></div>
-      {!plan.existing?.length && <p className="stats-muted">「기존 등록 관리」를 쓸 수 없습니다 — 이 환경에 MK119 v10 System Stats 체크포인트가 든 그룹이 없습니다{tester ? ` (테스트 빌드는 ${tester}_ 로 시작하는 그룹만 봅니다)` : ""}.</p>}
+      {plan.existing?.length > 0 && plan.orphans > 0 && <p className="stats-warning">그룹에 없는 리소스 수집 장비 {plan.orphans}대 — 「기존 등록 관리」에서 확인·정리할 수 있습니다.</p>}
+      <div className="stats-update-buttons"><button className="toolbtn primary" onClick={() => setMode(plan.existing?.length ? "ask" : "new")}>{plan.existing?.length ? "새로 등록 / 새 키 추가" : "새로 등록"}</button><button className="toolbtn" disabled={!plan.existing?.length && !plan.orphans} onClick={() => { setResult(null); setMode("manage"); }}>기존 등록 관리 (이름·주기 수정, 삭제)</button></div>
+      {!plan.existing?.length && plan.orphans > 0 && <p className="stats-warning">관리할 그룹은 없지만 그룹에 없는 리소스 수집 장비가 {plan.orphans}대 있습니다(admin 에서 그룹만 지운 경우 등) — 「기존 등록 관리」에서 확인·정리하세요.</p>}
+      {!plan.existing?.length && !plan.orphans && <p className="stats-muted">「기존 등록 관리」를 쓸 수 없습니다 — 이 환경에 MK119 v10 System Stats 체크포인트가 든 그룹이 없습니다{tester ? ` (테스트 빌드는 ${tester}_ 로 시작하는 그룹만 봅니다)` : ""}.</p>}
     </div>}
     {plan && selection && mode === "ask" && <div className="stats-update-ask">
       <p><b>이 환경에 이미 등록된 작업이 있습니다.</b></p>

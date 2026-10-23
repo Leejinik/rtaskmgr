@@ -59,3 +59,18 @@ func (a *App) StatsManageDelete(previewID, confirm string) (statsreg.DeleteResul
 	defer cancel()
 	return a.stats.ManageDelete(ctx, previewID, confirm)
 }
+
+// StatsManageOrphans lists resource-stats devices that are in no group.
+func (a *App) StatsManageOrphans(planID string) ([]statsreg.OrphanDevice, error) {
+	ctx, cancel := context.WithTimeout(a.ctx, time.Minute)
+	defer cancel()
+	return a.stats.ManageOrphans(ctx, planID)
+}
+
+// StatsManageOrphanDeletePreview previews deleting one device in no group
+// (run with StatsManageDelete like any delete preview).
+func (a *App) StatsManageOrphanDeletePreview(planID string, deviceID int64) (statsreg.DeletePreview, error) {
+	ctx, cancel := context.WithTimeout(a.ctx, time.Minute)
+	defer cancel()
+	return a.stats.ManageOrphanDeletePreview(ctx, planID, deviceID)
+}

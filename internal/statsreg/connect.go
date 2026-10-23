@@ -312,6 +312,11 @@ func (s *Service) Inspect(ctx context.Context, c Config) (Plan, error) {
 			}
 		}
 	}
+	if orphans, e := orphanDevices(ctx, db, cat.TypeID, cat.DriverID, 0, false); e != nil {
+		p.Warnings = append(p.Warnings, "그룹에 없는 장비를 확인하지 못했습니다: "+e.Error())
+	} else {
+		p.Orphans = len(orphans)
+	}
 	deleted, e := deletedKeys(ctx, db, cat.DriverID)
 	if e != nil {
 		return p, fmt.Errorf("삭제된 등록 조회 실패: %w", e)

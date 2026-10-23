@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { StatsManageLoad, StatsManagePreview, StatsManageApply, StatsManageResend, StatsManageDeletePreview, StatsManageDelete, StatsManagePending, StatsManageRedisRetry } from "../../wailsjs/go/main/App";
+import { StatsManageLoad, StatsManagePreview, StatsManageApply, StatsManageResend, StatsManageDeletePreview, StatsManageDelete, StatsManagePending, StatsManageRedisRetry, StatsManageOrphans, StatsManageOrphanDeletePreview } from "../../wailsjs/go/main/App";
 import { statsreg } from "../../wailsjs/go/models";
 import { useEsc } from "../useEsc";
 
@@ -36,6 +36,10 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
   const [delPreview, setDelPreview] = useState<statsreg.DeletePreview | null>(null);
   const [confirm, setConfirm] = useState("");
   const [delResult, setDelResult] = useState<statsreg.DeleteResult | null>(null);
+  // Resource-stats devices in no group (admin's group delete leaves them behind).
+  const [orphans, setOrphans] = useState<statsreg.OrphanDevice[] | null>(null);
+  const loadOrphans = (planID: string) => StatsManageOrphans(planID).then(v => setOrphans(v || [])).catch(() => setOrphans(null));
+  useEffect(() => { loadOrphans(plan.id); }, []);
   // Renames / deletes whose notices or Redis cleanup did not finish (kept on disk, also after a restart).
   const [pending, setPending] = useState<statsreg.PendingManage[]>([]);
   const refreshPending = () => StatsManagePending().then(v => setPending(v || [])).catch(() => {});
@@ -95,12 +99,17 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
       <ul>{pending.map(p => <li key={p.id}>{p.at.slice(0, 16).replace("T", " ")} · {p.kind === "delete" ? "삭제" : "이름·주기 변경"} · 그룹 {p.groupName} · {p.committed ? `알림 ${p.sent}/${p.total}건 보냄` : "저장 여부 모름"}{p.keysLeft ? ` · 남은 수집값 키 ${p.keysLeft}개` : ""}{p.message && <small>{p.message}</small>}
         {(!p.committed || p.sent < p.total) && <button className="linkbtn" disabled={!!busy} onClick={() => resend(p.id)}>알림 다시 보내기</button>}{p.kind === "delete" && p.committed && p.sent >= p.total && <> <button className="linkbtn" disabled={!!busy} onClick={() => redisRetry(p.id)}>Redis 정리 다시</button></>}</li>)}</ul>
     </details>}
-    <div className="stats-toolbar">
+    {orphans && orphans.length > 0 && <details className="stats-recovery stats-orphans" open><summary>그룹에 없는 장비 {orphans.length}대 — admin 에서 그룹을 지우면 장비는 그룹 밖에 남아 계속 수집됩니다</summary>
+      <p className="stats-muted">이 앱이 등록한 장비(체크포인트가 모두 리소스 수집 키)만 여기서 지울 수 있습니다. 나머지는 🔒 이유와 admin 에서 찾는 곳을 적어 두었습니다.</p>
+      <ul>{orphans.map(o => <li key={o.deviceId}>{o.name} (장비 ID {o.deviceId}) · 체크포인트 {o.checkpoints}개 {o.locked ? <small className="stats-warning">🔒 {o.locked}</small> : <button className="linkbtn" disabled={!!busy} onClick={() => work("지울 내용 확인 중…", async () => { setResult(null); setDelResult(null); setConfirm(""); setDelPreview(await StatsManageOrphanDeletePreview(plan.id, o.deviceId)); })}>지울 내용 미리보기</button>}</li>)}</ul>
+    </details>}
+    {!(plan.existing || []).length && <p className="stats-muted">관리할 그룹이 없습니다{orphans?.length ? " — 위의 「그룹에 없는 장비」만 정리할 수 있습니다" : ""}.</p>}
+    {(plan.existing || []).length > 0 && <div className="stats-toolbar">
       <label className="stats-inline">관리할 그룹<select value={groupId} disabled={!!busy} onChange={e => { const id = Number(e.target.value); setGroupId(id); setResult(null); setDelResult(null); work("그룹 불러오는 중…", () => load(id)); }}>{(plan.existing || []).map(g => <option key={g.groupId} value={g.groupId}>{g.name} (ID {g.groupId}) — 장비 {g.devices.length}대 · 체크포인트 {g.points}개</option>)}</select></label>
       <button className="toolbtn" disabled={!!busy || !groupId} onClick={() => { setResult(null); setDelResult(null); work("그룹 불러오는 중…", () => load(groupId)); }}>{group ? "다시 불러오기" : "불러오기"}</button>
       {group && <span>장비 {devices.length}대 · 키 모양 {group.rows.length}줄 · 체크포인트 {group.checkpoints}개{group.rawNames ? ` · 이름이 키 그대로 ${group.rawNames}개` : ""}</span>}
-    </div>
-    {!group && <p className="stats-muted">그룹을 고르고 「불러오기」를 누르면 그 그룹의 장비와 체크포인트를 키 모양별로 보여 줍니다. 이름·주기 수정, 장비 이름 수정, 장비·그룹 삭제를 할 수 있습니다.</p>}
+    </div>}
+    {!group && (plan.existing || []).length > 0 && <p className="stats-muted">그룹을 고르고 「불러오기」를 누르면 그 그룹의 장비와 체크포인트를 키 모양별로 보여 줍니다. 이름·주기 수정, 장비 이름 수정, 장비·그룹 삭제를 할 수 있습니다.</p>}
     {group && <>
       {group.warnings.map((w, i) => <p className="stats-warning" key={i}>{w}</p>)}
       <fieldset className="stats-settings" disabled={!!busy}><legend>장비 이름 (살아 있는 다른 장비와 같은 이름은 막습니다)</legend>
@@ -164,7 +173,7 @@ export default function StatsManage({ plan, busy, work, reinspect, onDialog }: {
       {delPreview.blockers?.map((b, i) => <p className="stats-error" key={"b" + i}>⛔ {b}</p>)}
       {delPreview.warnings?.map((w, i) => <p className="stats-warning" key={"w" + i}>⚠ {w}</p>)}
       {delPreview.id && <label>확인을 위해 <b>{delPreview.confirm}</b> 을(를) 그대로 입력하세요<input aria-label="삭제 확인 이름" value={confirm} autoComplete="off" onChange={e => setConfirm(e.target.value)} /></label>}
-      <div className="stats-update-buttons"><button className="toolbtn danger" disabled={!!busy || !delPreview.id || confirm !== delPreview.confirm} onClick={() => work("삭제 중…", async () => { const p = delPreview; setDelPreview(null); const r = await StatsManageDelete(p.id, confirm); setDelResult(r); setConfirm(""); const next = await reinspect(); const still = next.existing?.find(g => g.groupId === groupId); if (still) setGroup(await StatsManageLoad(next.id, groupId)); else { setGroup(null); setGroupId(next.existing?.[0]?.groupId || 0); } })}>{delPreview.wholeGroup ? "그룹 삭제" : "장비 삭제"}</button><button className="toolbtn" disabled={!!busy} onClick={() => setDelPreview(null)}>취소</button></div>
+      <div className="stats-update-buttons"><button className="toolbtn danger" disabled={!!busy || !delPreview.id || confirm !== delPreview.confirm} onClick={() => work("삭제 중…", async () => { const p = delPreview; setDelPreview(null); const r = await StatsManageDelete(p.id, confirm); setDelResult(r); setConfirm(""); const next = await reinspect(); loadOrphans(next.id); const still = next.existing?.find(g => g.groupId === groupId); if (still) setGroup(await StatsManageLoad(next.id, groupId)); else { setGroup(null); setGroupId(next.existing?.[0]?.groupId || 0); } })}>{delPreview.wholeGroup ? "그룹 삭제" : "장비 삭제"}</button><button className="toolbtn" disabled={!!busy} onClick={() => setDelPreview(null)}>취소</button></div>
     </div></div>}
   </div>;
 }

@@ -54,7 +54,10 @@ type DeletePreview struct {
 }
 
 type deletePlan struct {
-	whole       bool
+	whole bool
+	// orphan: one device that is in no group (manage_orphan.go); typeID re-checks it.
+	orphan      bool
+	typeID      int64
 	groupID     int64
 	groupName   string
 	rule        int64
@@ -257,14 +260,29 @@ func buildDelete(ctx context.Context, q queryer, groupID, driverID int64, req De
 	for i := range plan.devices {
 		plan.devices[i].Checkpoints = counts[plan.devices[i].DeviceID]
 	}
-	policies, e := checkpointPolicies(ctx, q, ids, lock)
+	if e = deleteBlockers(ctx, q, &plan, &prev, lock); e != nil {
+		return plan, prev, e
+	}
+	if req.WholeGroup && len(plan.devices) == 0 {
+		prev.Warnings = append(prev.Warnings, "리소스 수집 장비가 없는 빈 그룹입니다 — 그룹만 지웁니다.")
+	}
+	plan.fingerprint = deleteFingerprint(plan.devices, ids)
+	plan.confirm = prev.Confirm
+	prev.Devices, prev.Checkpoints = plan.devices, len(ids)
+	return plan, prev, nil
+}
+
+// deleteBlockers adds what refuses a delete (event policies or specify-rule
+// conditions on its checkpoints) and, outside the transaction, open alarms.
+func deleteBlockers(ctx context.Context, q queryer, plan *deletePlan, prev *DeletePreview, lock bool) error {
+	policies, e := checkpointPolicies(ctx, q, plan.checkpoints, lock)
 	if e != nil {
-		return plan, prev, fmt.Errorf("이벤트 정책 확인 실패 — 지우지 않습니다: %w", e)
+		return fmt.Errorf("이벤트 정책 확인 실패 — 지우지 않습니다: %w", e)
 	}
 	if len(policies) > 0 {
 		prev.Blockers = append(prev.Blockers, fmt.Sprintf("지울 체크포인트를 대상으로 한 이벤트 정책 %d개가 있습니다: %s. 정책 삭제와 열린 알람 종료는 admin 이 하는 일이라 이 앱은 지우지 않습니다 — admin 에서 이 장비를 삭제하거나 정책을 먼저 지우세요.", len(policies), strings.Join(policies, ", ")))
 	}
-	if refs, e := conditionRefs(ctx, q, ids); e != nil {
+	if refs, e := conditionRefs(ctx, q, plan.checkpoints); e != nil {
 		prev.Warnings = append(prev.Warnings, "체크포인트를 번호로 가리키는 지정 규칙 조건을 확인하지 못했습니다: "+e.Error())
 	} else if len(refs) > 0 {
 		prev.Blockers = append(prev.Blockers, fmt.Sprintf("지울 체크포인트를 번호로 가리키는 체크포인트 지정 규칙 조건이 있습니다: %s. 체크포인트가 지워지면 Collector가 이 조건에서 오류를 내 그 규칙을 쓰는 이벤트 정책 전체가 멈출 수 있으므로 막습니다 — admin 에서 조건을 먼저 지우세요.", strings.Join(refs, ", ")))
@@ -277,13 +295,7 @@ func buildDelete(ctx context.Context, q queryer, groupID, driverID int64, req De
 			prev.Warnings = append(prev.Warnings, fmt.Sprintf("이 장비에 아직 닫히지 않은 알람이 %d건 있습니다. 장비를 지워도 이 알람은 자동으로 닫히지 않을 수 있으니 필요하면 알람 화면에서 정리하세요.", open))
 		}
 	}
-	if req.WholeGroup && len(plan.devices) == 0 {
-		prev.Warnings = append(prev.Warnings, "리소스 수집 장비가 없는 빈 그룹입니다 — 그룹만 지웁니다.")
-	}
-	plan.fingerprint = deleteFingerprint(plan.devices, ids)
-	plan.confirm = prev.Confirm
-	prev.Devices, prev.Checkpoints = plan.devices, len(ids)
-	return plan, prev, nil
+	return nil
 }
 
 // ManageDeletePreview shows what a delete removes; nothing is written.
@@ -314,6 +326,20 @@ func (s *Service) ManageDeletePreview(ctx context.Context, req DeleteRequest) (D
 // deleteTx deletes the plan's devices (and the group) in tx after checking that
 // nothing changed since the preview.
 func deleteTx(ctx context.Context, tx *sql.Tx, plan deletePlan, ip string) error {
+	if plan.orphan {
+		// Still a device of this tool, in no group, unchanged since the preview.
+		again, check, err := buildOrphanDelete(ctx, tx, plan.typeID, plan.driverID, firstDevice(plan.devices), true)
+		if err != nil {
+			return noteErr(err, " — 아무것도 지우지 않았습니다")
+		}
+		if again.fingerprint != plan.fingerprint {
+			return fmt.Errorf("미리보기 뒤에 장비나 체크포인트가 바뀌었습니다 — 아무것도 지우지 않았습니다. 다시 미리보기 하세요")
+		}
+		if len(check.Blockers) > 0 {
+			return fmt.Errorf("미리보기 뒤에 삭제를 막는 것이 생겼습니다 — 아무것도 지우지 않았습니다: %s", strings.Join(check.Blockers, " / "))
+		}
+		return deleteDevicesTx(ctx, tx, plan, ip)
+	}
 	var name string
 	var explorer sql.NullInt64
 	if e := tx.QueryRowContext(ctx, "SELECT name, explorer_id FROM device_group WHERE id=? FOR UPDATE", plan.groupID).Scan(&name, &explorer); e != nil {
@@ -333,6 +359,18 @@ func deleteTx(ctx context.Context, tx *sql.Tx, plan deletePlan, ip string) error
 	if len(check.Blockers) > 0 {
 		return fmt.Errorf("미리보기 뒤에 삭제를 막는 것이 생겼습니다 — 아무것도 지우지 않았습니다: %s", strings.Join(check.Blockers, " / "))
 	}
+	if e := deleteDevicesTx(ctx, tx, plan, ip); e != nil {
+		return e
+	}
+	if !plan.whole {
+		return nil
+	}
+	return deleteGroupTx(ctx, tx, plan, explorer, ip)
+}
+
+// deleteDevicesTx deletes the plan's devices like admin: bulk flag=-1 on the
+// device, its interfaces, checkpoints and controls (no _aud), liz_log per device.
+func deleteDevicesTx(ctx context.Context, tx *sql.Tx, plan deletePlan, ip string) error {
 	ids := deviceIDs(plan.devices)
 	if len(ids) > 0 {
 		args := idArgs(ids)
@@ -359,9 +397,11 @@ func deleteTx(ctx context.Context, tx *sql.Tx, plan deletePlan, ip string) error
 			}
 		}
 	}
-	if !plan.whole {
-		return nil
-	}
+	return nil
+}
+
+// deleteGroupTx deletes the group row like admin's tree save.
+func deleteGroupTx(ctx context.Context, tx *sql.Tx, plan deletePlan, explorer sql.NullInt64, ip string) error {
 	rev, e := insert(ctx, tx, "INSERT INTO revinfo (timestamp) VALUES (?)", time.Now().UnixMilli())
 	if e != nil {
 		return e
