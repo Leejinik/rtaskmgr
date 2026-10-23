@@ -67,18 +67,18 @@ type Point struct {
 	BadValue bool `json:"badValue"`
 }
 type Plan struct {
-	ID          string          `json:"id"`
-	Servers     []Server        `json:"servers"`
-	Points      []Point         `json:"points"`
-	Explorers   []Option        `json:"explorers"`
-	Clusters    []Option        `json:"clusters"`
-	GroupName   string          `json:"groupName"`
-	Warnings    []string        `json:"warnings"`
-	RedisInfo   string          `json:"redisInfo"`
+	ID        string   `json:"id"`
+	Servers   []Server `json:"servers"`
+	Points    []Point  `json:"points"`
+	Explorers []Option `json:"explorers"`
+	Clusters  []Option `json:"clusters"`
+	GroupName string   `json:"groupName"`
+	Warnings  []string `json:"warnings"`
+	RedisInfo string   `json:"redisInfo"`
 	// RedisMaster: the master found by ROLE ("" = none: deletes are refused).
 	RedisMaster string `json:"redisMaster"`
 	// Orphans: resource-stats devices in no group (admin's group delete leaves them).
-	Orphans int `json:"orphans"`
+	Orphans     int             `json:"orphans"`
 	PatternInfo string          `json:"patternInfo"`
 	Existing    []ExistingGroup `json:"existing"`
 }

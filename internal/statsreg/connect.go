@@ -104,6 +104,7 @@ func kafkaDialer(c Config) (*kafka.Dialer, error) {
 	}
 	return d, nil
 }
+
 type queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 	QueryRowContext(context.Context, string, ...any) *sql.Row
