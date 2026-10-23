@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { host, statsreg } from "../../wailsjs/go/models";
 import { SaveHosts, StatsClusterConnections, StatsSetClusterConnection, StatsDeleteClusterConnection } from "../../wailsjs/go/main/App";
 import { candidatesOf } from "./ConnectDialog";
+import { newUUID } from "../uuid";
 import StatsConnectionFields, { KafkaRow, defaultStatsConfig, statsConnection } from "./StatsConnectionFields";
 import StatsDiscoverReview, { DiscoverResult, discoverFromHosts } from "./StatsDiscoverReview";
 
@@ -242,7 +243,7 @@ export default function ClusterDialog({ editing, hosts = [], onSaved, onClose }:
     setBusy(true);
     setErr("");
     try {
-      const clusterId = editing?.id ?? crypto.randomUUID();
+      const clusterId = editing?.id ?? newUUID();
       // Before the hosts: a failure here leaves nothing half saved, whereas a
       // retry after saving new rows would register them a second time.
       if (statsConfigChecked) {

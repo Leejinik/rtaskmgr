@@ -36,6 +36,7 @@ import ScheduledModal from "./components/ScheduledModal";
 import PacketCaptureModal from "./components/PacketCaptureModal";
 import PasswordDialog from "./components/PasswordDialog";
 import { fmtUptime, fmtClock } from "./format";
+import { newUUID } from "./uuid";
 import { PwInfo, isUrgent, pwTooltip, expLabel } from "./pw";
 
 interface Playback {
@@ -626,7 +627,7 @@ export default function App() {
   // named after it, keeping its id, credentials and jump settings.
   async function convertToCluster(h: host.Host) {
     try {
-      const cid = crypto.randomUUID();
+      const cid = newUUID();
       await SaveHosts([host.Host.createFrom({ ...h, clusterId: cid, clusterName: h.name })]);
       await refreshHosts();
       openOverview(cid);
