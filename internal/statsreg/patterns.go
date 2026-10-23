@@ -100,8 +100,15 @@ func generalize(name, key, host string) string {
 		out = strings.ReplaceAll(out, host, "{host}")
 	}
 	for i, t := range keyTokens(key) {
-		if t != host && len(t) > 1 && !isDigits(t) {
+		switch {
+		case t == host:
+		case len(t) > 1 && !isDigits(t):
 			out = strings.ReplaceAll(out, t, fmt.Sprintf("{t%d}", i+1))
+		case t != "":
+			// A number (e.g. a module id) only where it stands alone — braces count
+			// as a boundary, so 「lizstats.{11}.cpu」 → 「lizstats.{{t1}}.cpu」. 4th round:
+			// the number was remembered as text and server_1's {11} filled {12}/{13} keys.
+			out = regexp.MustCompile(`(^|[^0-9A-Za-z])`+regexp.QuoteMeta(t)+`($|[^0-9A-Za-z])`).ReplaceAllString(out, "${1}"+fmt.Sprintf("{t%d}", i+1)+"${2}")
 		}
 	}
 	if n, ok := hostOrdinal(host); ok && host != "common" {
@@ -242,7 +249,7 @@ func (s *Service) applyPatterns(p *Plan) {
 		if !ok || pt.Host == "" {
 			continue
 		}
-		if name, ok := render(np.Name, pt.Key, pt.Host); ok && name != "" && len([]rune(name)) <= 100 {
+		if name, ok := render(np.Name, pt.Key, pt.Host); ok && name != "" && len([]rune(name)) <= 100 && !foreignInName(name, pt.Key, pt.Host, p.Servers) {
 			pt.Name = name
 		}
 		if pt.TemplateID == 0 && (np.Format == 3 || np.Format == 4) {
@@ -388,4 +395,26 @@ func (s *Service) ImportPatterns(id string) (PatternEvent, error) {
 		return PatternEvent{}, fmt.Errorf("완료된 2단계 등록 기록이 아닙니다")
 	}
 	return s.learnPatterns(rec.Points, "receipt "+id)
+}
+
+// foreignInName: a remembered name that, filled for this key, still carries
+// another key's value as text — a {…} that is not one of this key's values, or
+// another server's hostname. Such a name is not filled in (patterns learned
+// before the fix above hold 「lizstats.{11}.cpu」 for every module).
+func foreignInName(name, key, host string, servers []Server) bool {
+	own := map[string]bool{}
+	for _, t := range keyTokens(key) {
+		own[t] = true
+	}
+	for _, m := range placeholder.FindAllStringSubmatch(name, -1) {
+		if !own[m[1]] {
+			return true
+		}
+	}
+	for _, s := range servers {
+		if s.Hostname != "" && s.Hostname != "common" && s.Hostname != host && regexp.MustCompile(`(^|[^0-9A-Za-z])`+regexp.QuoteMeta(s.Hostname)+`($|[^0-9A-Za-z])`).MatchString(name) {
+			return true
+		}
+	}
+	return false
 }
