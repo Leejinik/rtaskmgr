@@ -1046,6 +1046,7 @@ func (s *Service) ManagePreview(ctx context.Context, edit ManageEdit) (ManagePre
 		}
 		out.Errors = append(out.Errors, conflicts...)
 		out.Warnings = append(out.Warnings, nameWarnings(ctx, db, plan.points)...)
+		out.Warnings = append(out.Warnings, deviceNameWarnings(ctx, db, plan.devices)...)
 	}
 	devices, ifaces := map[int64]bool{}, map[int64]bool{}
 	for _, c := range plan.points {
