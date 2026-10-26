@@ -136,6 +136,19 @@ const stageLabel = (p?: LogCollectProgress) => {
 const midnight = (d: Date) =>
   new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).getTime();
 
+// <input type="date"> 와 같은 YYYY-MM-DD(로컬). 문자열 비교가 곧 날짜 비교다.
+const isoDay = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+// 기간 지정이 말이 안 되면 수집을 막는다. 예전에는 거꾸로 넣으면 서버가 맞바꿔 그대로
+// 돌았는데, 시작이 늦은 날 23:59:59·끝이 이른 날 00:00 이 되어 양 끝 날짜가 빠진 채로
+// 「됐다」고 나왔다. 시작이 오늘보다 뒤면 담을 로그가 아직 없다.
+function spanError(fromDate: string, toDate: string, today: string): string {
+  if (fromDate && toDate && fromDate > toDate) return `시작 일자(${fromDate})가 종료 일자(${toDate})보다 늦습니다 — 날짜를 바로잡으세요.`;
+  if (fromDate && fromDate > today) return `시작 일자(${fromDate})가 오늘(${today})보다 뒤입니다 — 아직 담을 로그가 없습니다.`;
+  return "";
+}
+
 export default function LogCollectView({
   clusterId, hosts, connected, running, cancelling, progress, result,
   onStart, onCancel, onOpenFolder, onBundle, onClearResult, onRedownload,
@@ -169,6 +182,8 @@ export default function LogCollectView({
   const liveIds = useMemo(() => hosts.filter((h) => connected[h.id]).map((h) => h.id), [hosts, connected]);
   const liveKey = liveIds.join(",");
 
+  const today = isoDay(new Date());
+  const rangeErr = rangeMode === "span" ? spanError(fromDate, toDate, today) : "";
   const rangeSig = `${rangeMode}|${recentDays}|${fromDate}|${toDate}`;
   const [surveyedRange, setSurveyedRange] = useState("");
   const staleRange = surveys.length > 0 && surveyedRange !== "" && surveyedRange !== rangeSig;
@@ -202,6 +217,7 @@ export default function LogCollectView({
   }, []);
 
   async function runSurvey() {
+    if (rangeErr) return;
     if (liveIds.length === 0) {
       setSurveys([]);
       setSurveyErr("연결된 서버가 없습니다. 먼저 ‘모두 연결’ 하세요.");
@@ -434,9 +450,11 @@ export default function LogCollectView({
         )}
         {rangeMode === "span" && (
           <>
-            <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+            <input type="date" value={fromDate} max={toDate && toDate < today ? toDate : today}
+              onChange={(e) => setFromDate(e.target.value)} />
             <span style={{ opacity: 0.6 }}>~</span>
-            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+            <input type="date" value={toDate} min={fromDate || undefined}
+              onChange={(e) => setToDate(e.target.value)} />
           </>
         )}
         {journalPicked && (
@@ -450,12 +468,13 @@ export default function LogCollectView({
         )}
         <span style={{ flex: 1 }} />
         <button className={"toolbtn" + (staleRange ? " primary" : "")}
-          onClick={runSurvey} disabled={surveying || running}>
+          onClick={runSurvey} disabled={surveying || running || !!rangeErr}>
           {surveying ? "조사 중…" : "다시 조사"}
         </button>
       </div>
 
-      {staleRange && (
+      {rangeErr && <div className="lc-err">{rangeErr}</div>}
+      {staleRange && !rangeErr && (
         <div className="lc-warn">
           기간을 바꿨습니다 — 아래 용량은 이전 기간 기준입니다. ‘다시 조사’를 눌러 다시 계산하세요.
         </div>
@@ -676,7 +695,7 @@ export default function LogCollectView({
               {cancelling ? "취소 중…" : "수집 취소"}
             </button>
           ) : (
-            <button className="toolbtn primary" disabled={startable.length === 0}
+            <button className="toolbtn primary" disabled={startable.length === 0 || !!rangeErr}
               onClick={() => onStart(buildTasks())}
               title="사본을 모아 압축하고 내려받은 뒤, 검증에 성공하면 서버의 사본과 압축 파일을 지웁니다">
               수집 → 다운로드 ({startable.length}대)

@@ -1036,7 +1036,10 @@ func (m *Manager) LogPlanFor(hostID string, req LogRequest, cat LogCatalog) (Log
 	if len(picks) == 0 {
 		return LogPlan{}, fmt.Errorf("수집할 항목이 없습니다%s", joinReasons(rejected))
 	}
-	fromMs, toMs := clampLogRange(req.FromMs, req.ToMs, req.RecentDays, time.Now())
+	fromMs, toMs, err := clampLogRange(req.FromMs, req.ToMs, req.RecentDays, time.Now())
+	if err != nil {
+		return LogPlan{}, err
+	}
 
 	out := ""
 	if s.elevated {

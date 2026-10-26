@@ -788,7 +788,12 @@ func moduleNameFromLogDir(dir string) string {
 
 // clampLogRange normalises the requested window. A zero start means "everything";
 // recentDays is a convenience the UI offers instead of typing dates.
-func clampLogRange(fromMs, toMs int64, recentDays int, now time.Time) (int64, int64) {
+//
+// A reversed window is refused, not swapped: the UI sends the start day at 00:00 and
+// the end day at 23:59:59, so swapping them made the window run from the later
+// day's 23:59:59 to the earlier day's 00:00 and dropped both end days while the run
+// reported success. A start after now has nothing to collect yet.
+func clampLogRange(fromMs, toMs int64, recentDays int, now time.Time) (int64, int64, error) {
 	if recentDays > 0 {
 		start := now.AddDate(0, 0, -recentDays)
 		y, m, d := start.Date()
@@ -802,9 +807,16 @@ func clampLogRange(fromMs, toMs int64, recentDays int, now time.Time) (int64, in
 		toMs = 0
 	}
 	if fromMs > 0 && toMs > 0 && toMs < fromMs {
-		fromMs, toMs = toMs, fromMs
+		return 0, 0, fmt.Errorf("시작 일자(%s)가 종료 일자(%s)보다 늦습니다", logDay(fromMs, now), logDay(toMs, now))
 	}
-	return fromMs, toMs
+	if fromMs > now.UnixMilli() {
+		return 0, 0, fmt.Errorf("시작 일자(%s)가 오늘보다 뒤입니다 — 아직 담을 로그가 없습니다", logDay(fromMs, now))
+	}
+	return fromMs, toMs, nil
+}
+
+func logDay(ms int64, now time.Time) string {
+	return time.UnixMilli(ms).In(now.Location()).Format("2006-01-02")
 }
 
 // logSizeCapBytes is a runaway guard, not the real gate. The real gate is the tree:

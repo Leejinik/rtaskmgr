@@ -288,23 +288,36 @@ func TestModuleNameFromLogDir(t *testing.T) {
 func TestClampLogRange(t *testing.T) {
 	now := time.Date(2026, 7, 30, 15, 4, 5, 0, time.Local)
 	// recentDays wins and snaps to midnight, so "최근 3일" is a whole-day boundary.
-	from, to := clampLogRange(0, 0, 3, now)
+	from, to, err := clampLogRange(0, 0, 3, now)
 	want := time.Date(2026, 7, 27, 0, 0, 0, 0, time.Local).UnixMilli()
-	if from != want || to != 0 {
-		t.Errorf("recent 3 days = (%d,%d), want (%d,0)", from, to, want)
+	if err != nil || from != want || to != 0 {
+		t.Errorf("recent 3 days = (%d,%d,%v), want (%d,0,nil)", from, to, err, want)
 	}
-	// A reversed explicit range is corrected rather than silently yielding nothing.
+	// A reversed explicit range is refused: swapping it turned 07-01 00:00 ~ 06-01 23:59:59
+	// into 06-01 23:59:59 ~ 07-01 00:00 and silently dropped both end days.
 	a := time.Date(2026, 7, 1, 0, 0, 0, 0, time.Local).UnixMilli()
-	b := time.Date(2026, 6, 1, 0, 0, 0, 0, time.Local).UnixMilli()
-	from, to = clampLogRange(a, b, 0, now)
-	if from != b || to != a {
-		t.Errorf("reversed range not corrected: (%d,%d)", from, to)
+	b := time.Date(2026, 6, 1, 23, 59, 59, 0, time.Local).UnixMilli()
+	if _, _, err = clampLogRange(a, b, 0, now); err == nil || !strings.Contains(err.Error(), "2026-07-01") || !strings.Contains(err.Error(), "2026-06-01") {
+		t.Errorf("reversed range not refused with both days named: %v", err)
+	}
+	// In order it passes through unchanged.
+	if f, tt, err := clampLogRange(b-86399000, a+86399000, 0, now); err != nil || f != b-86399000 || tt != a+86399000 {
+		t.Errorf("ordered range = (%d,%d,%v)", f, tt, err)
+	}
+	// A start after now has nothing to collect.
+	future := time.Date(2026, 8, 2, 0, 0, 0, 0, time.Local).UnixMilli()
+	if _, _, err = clampLogRange(future, 0, 0, now); err == nil {
+		t.Errorf("future start not refused")
+	}
+	// Today's midnight is not "after now".
+	if _, _, err = clampLogRange(time.Date(2026, 7, 30, 0, 0, 0, 0, time.Local).UnixMilli(), 0, 0, now); err != nil {
+		t.Errorf("today refused: %v", err)
 	}
 	// Zero means "everything".
-	if f, tt := clampLogRange(0, 0, 0, now); f != 0 || tt != 0 {
-		t.Errorf("no range = (%d,%d), want (0,0)", f, tt)
+	if f, tt, err := clampLogRange(0, 0, 0, now); err != nil || f != 0 || tt != 0 {
+		t.Errorf("no range = (%d,%d,%v), want (0,0,nil)", f, tt, err)
 	}
-	if f, _ := clampLogRange(-5, -9, 0, now); f != 0 {
+	if f, _, _ := clampLogRange(-5, -9, 0, now); f != 0 {
 		t.Errorf("negatives not clamped: %d", f)
 	}
 }

@@ -1337,6 +1337,11 @@ body.col-resizing * {
   font-size: 12px;
   white-space: nowrap;
 }
+/* 기간이 잘못돼 잠긴 「다시 조사」가 primary 색 그대로라 눌리는 것처럼 보였다. */
+.lc-wrap .toolbtn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
 .lc-err {
   flex: 0 0 auto;
   color: var(--bad);
